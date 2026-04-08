@@ -55,7 +55,10 @@ def keyframe_selection_overlap(gt_depth, w2c, intrinsics, keyframe_list, k, devi
         width, height = gt_depth.shape[2], gt_depth.shape[1]
         valid_depth_indices = torch.where(gt_depth[0] > 0)
         valid_depth_indices = torch.stack(valid_depth_indices, dim=1)
+        if valid_depth_indices.shape[0] ==0:
+             return []
         indices = torch.randint(valid_depth_indices.shape[0], (pixels,))
+        
         sampled_indices = valid_depth_indices[indices]
 
         # Back Project the selected pixels to 3D Pointcloud

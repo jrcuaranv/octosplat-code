@@ -20,6 +20,7 @@ import torch
 import torch.nn.functional as func
 from torch.autograd import Variable
 from math import exp
+import math
 
 
 def build_rotation(q, device="cuda"):
@@ -146,7 +147,7 @@ def cat_params_to_optimizer(new_params, params, params_opt_exclude, optimizer):
 
 def remove_points(to_remove, params, params_opt_exclude, variables, optimizer):
     to_keep = ~to_remove
-    keys = [k for k in params.keys() if k not in ['cam_unnorm_rots', 'cam_trans']]
+    keys = [k for k in params.keys() if k not in ['cam_unnorm_rots', 'cam_trans', 'means3D_2', 'unnorm_rotations_2', 'logit_opacities_2', 'log_scales_2']]
     for k in keys:
         # Keys not in optimizer
         if k in params_opt_exclude:
@@ -185,9 +186,11 @@ def prune_gaussians(params, params_opt_exclude, variables, optimizer, iter, prun
                 remove_threshold = prune_dict['removal_opacity_threshold']
             # Remove Gaussians with low opacity
             to_remove = (torch.sigmoid(params['logit_opacities']) < remove_threshold).squeeze()
+            
             # Remove Gaussians that are too big
             if iter >= prune_dict['remove_big_after']:
                 big_points_ws = torch.exp(params['log_scales']).max(dim=1).values > 0.1 * variables['scene_radius']
+                
                 to_remove = torch.logical_or(to_remove, big_points_ws)
             params, variables = remove_points(to_remove, params, params_opt_exclude, variables, optimizer)
             torch.cuda.empty_cache()
@@ -196,8 +199,43 @@ def prune_gaussians(params, params_opt_exclude, variables, optimizer, iter, prun
         if iter > 0 and iter % prune_dict['reset_opacities_every'] == 0 and prune_dict['reset_opacities']:
             new_params = {'logit_opacities': inverse_sigmoid(torch.ones_like(params['logit_opacities']) * 0.01)}
             params = update_params_and_optimizer(new_params, params, optimizer)
-
+        
     return params, variables
+
+def prune_aux_gaussians(params, params_opt_exclude, variables, optimizer):
+    to_remove = params['semantic_ids']==0.555
+    params, variables = remove_points(to_remove, params, params_opt_exclude, variables, optimizer)
+    torch.cuda.empty_cache()
+    return params, variables
+
+def prune_outlier_semantics(params, params_opt_exclude, variables, optimizer, device = "cuda"):
+    semantic_targets = [[1,0,0],[0,0,0],[0,1,0]] #rgb semantics
+    print("Prunning outlier semantics")
+    np.savetxt('/home/jose/params.txt',params['semantic_colors'].detach().cpu().numpy())
+    np.savetxt('/home/jose/means3D.txt',params['means3D'].detach().cpu().numpy())
+    np.savetxt('/home/jose/opt_count.txt',params['opt_count'].detach().cpu().numpy())
+    masks = []
+    for sem_t in semantic_targets:
+
+        sem_target = torch.tensor(sem_t).to(device)
+        rmse = torch.linalg.norm(sem_target - params['semantic_colors'].clip(0,1), axis=1)/math.sqrt(3)
+        to_keep_mask = rmse < 0.01
+        masks.append(to_keep_mask)
+    
+    to_keep = masks[0] | masks[1] | masks[2]
+    to_remove = ~to_keep
+    # to_remove = 0*to_remove
+
+    print("Number of params:", params['semantic_colors'].shape)
+    print("Removing:", to_remove.sum().item())
+
+    # to_remove = params['semantic_ids'][invalid_sem_mask]
+    params, variables = remove_points(to_remove, params, params_opt_exclude, variables, optimizer)
+    
+    params['semantic_colors'] = params['semantic_colors'].clip(0,1) # might not be necessary
+    torch.cuda.empty_cache()
+    return params, variables
+
 
 
 def densify(params, variables, optimizer, iter, densify_dict, params_opt_exclude, device="cuda"):

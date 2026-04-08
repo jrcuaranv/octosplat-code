@@ -2,6 +2,19 @@ import torch
 import torch.nn.functional as F
 from utils.slam_external import build_rotation
 
+def geman_mcclure_loss(pred, target, c=1.0):
+    diff = pred - target
+    return torch.mean((diff ** 2) / (diff ** 2 + c ** 2))
+
+def tukey_loss(pred, target, c=1.0):
+    diff = pred - target
+    abs_diff = torch.abs(diff)
+    mask = abs_diff < c
+    loss = torch.zeros_like(diff)
+    loss[mask] = (c**2 / 6) * (1 - (1 - (diff[mask] / c) ** 2) ** 3)
+    loss[~mask] = c**2 / 6
+    return torch.mean(loss)
+    
 def l1_loss_v1(x, y):
     return torch.abs((x - y)).mean()
 
@@ -139,6 +152,24 @@ def transformed_params2rendervar(params, transformed_pts, device="cuda"):
     }
     return rendervar
 
+def transformed_entropy2rendervar(params, transformed_pts, device="cuda"):
+    rendervar = {
+        'means3D': transformed_pts,
+        'colors_precomp': get_entropy(torch.sigmoid(params['logit_opacities'])),
+        'rotations': F.normalize(params['unnorm_rotations']),
+        'opacities': torch.sigmoid(params['logit_opacities']),
+        'scales': torch.exp(torch.tile(params['log_scales'], (1, 3))),
+        'means2D': torch.zeros_like(params['means3D'], requires_grad=True, device=device) + 0
+    }
+    return rendervar
+
+def get_entropy(x):
+    entropy = -x*torch.log2(x) - (1-x)*torch.log2(1-x) #jrcv
+    entropy = torch.nan_to_num(entropy, nan=0.0) #jrcv
+    entropy = entropy.view(-1,1).repeat(1,3)
+    return entropy
+
+
 def semantics2rendervar(params, device="cuda"):
     rendervar = {
         'means3D': params['means3D'],
@@ -154,6 +185,18 @@ def transformed_semantics2rendervar(params, transformed_pts, device="cuda"):
     rendervar = {
         'means3D': transformed_pts,
         'colors_precomp': params['semantic_colors'],
+        'rotations': F.normalize(params['unnorm_rotations']),
+        'opacities': torch.sigmoid(params['logit_opacities']),
+        'scales': torch.exp(torch.tile(params['log_scales'], (1, 3))),
+        'means2D': torch.zeros_like(params['means3D'], requires_grad=True, device=device) + 0
+    }
+    return rendervar
+
+# test, jrcv
+def transformed_rgb_loss_rendervar(params, transformed_pts, device="cuda"):
+    rendervar = {
+        'means3D': transformed_pts,
+        'colors_precomp': params['rgb_loss'].view(-1,1).repeat(1,3), # it has to be a (:,3) "image"
         'rotations': F.normalize(params['unnorm_rotations']),
         'opacities': torch.sigmoid(params['logit_opacities']),
         'scales': torch.exp(torch.tile(params['log_scales'], (1, 3))),
@@ -194,16 +237,33 @@ def get_depth_and_silhouette(pts_3D, w2c, device="cuda"):
     These are evaluated at gaussian center.
     """
     # Depth of each gaussian center in camera frame
-    pts4 = torch.cat((pts_3D, torch.ones_like(pts_3D[:, :1])), dim=-1)
-    pts_in_cam = (w2c @ pts4.transpose(0, 1)).transpose(0, 1)
-    depth_z = pts_in_cam[:, 2].unsqueeze(-1) # [num_gaussians, 1]
+    # pts4 = torch.cat((pts_3D, torch.ones_like(pts_3D[:, :1])), dim=-1)
+    # pts_in_cam = (w2c @ pts4.transpose(0, 1)).transpose(0, 1)
+    # depth_z = pts_in_cam[:, 2].unsqueeze(-1) # [num_gaussians, 1]
+    depth_z = pts_3D[:, 2].unsqueeze(-1) # [num_gaussians, 1] jrcv
     depth_z_sq = torch.square(depth_z) # [num_gaussians, 1]
 
     # Depth and Silhouette
     depth_silhouette = torch.zeros((pts_3D.shape[0], 3)).to(device).float()
-    depth_silhouette[:, 0] = depth_z.squeeze(-1)
-    depth_silhouette[:, 1] = 1.0
+    depth_silhouette[:, 0] = depth_z.squeeze(-1) #depth
+    depth_silhouette[:, 1] = 1.0 #silhouette
     depth_silhouette[:, 2] = depth_z_sq.squeeze(-1)
+    
+    return depth_silhouette
+
+def get_depth_silhouette_rgbloss(params, pts_3D, device="cuda"):
+    """
+    Function to compute depth, silhouette and rgb_loss for each gaussian.
+    These are evaluated at gaussian center.
+    """
+    depth_z = pts_3D[:, 2].unsqueeze(-1) # [num_gaussians, 1] jrcv
+    depth_z_sq = torch.square(depth_z) # [num_gaussians, 1]
+
+    # Depth, Silhouette and rgb_loss
+    depth_silhouette = torch.zeros((pts_3D.shape[0], 3)).to(device).float()
+    depth_silhouette[:, 0] = depth_z.squeeze(-1) #depth
+    depth_silhouette[:, 1] = 1.0 #silhouette
+    depth_silhouette[:, 2] = params['rgb_loss']
     
     return depth_silhouette
 
@@ -220,8 +280,18 @@ def params2depthplussilhouette(params, w2c, device="cuda"):
     return rendervar
 
 
-def transformed_params2depthplussilhouette(params, w2c, transformed_pts, device="cuda"):
-    rendervar = {
+def transformed_params2depthplussilhouette(params, w2c, transformed_pts, params_v = None, device="cuda"):
+    if params_v ==2:
+        rendervar = {
+            'means3D': transformed_pts,
+            'colors_precomp': get_depth_and_silhouette(transformed_pts, w2c),
+            'rotations': F.normalize(params['unnorm_rotations_2']),
+            'opacities': torch.sigmoid(params['logit_opacities_2']),
+            'scales': torch.exp(torch.tile(params['log_scales_2'], (1, 3))),
+            'means2D': torch.zeros_like(params['means3D_2'], requires_grad=True, device=device) + 0
+        }
+    else:
+        rendervar = {
         'means3D': transformed_pts,
         'colors_precomp': get_depth_and_silhouette(transformed_pts, w2c),
         'rotations': F.normalize(params['unnorm_rotations']),
@@ -231,8 +301,20 @@ def transformed_params2depthplussilhouette(params, w2c, transformed_pts, device=
     }
     return rendervar
 
+def transformed_params2depth_silhouette_rgbloss(params, w2c, transformed_pts, device="cuda"):
+    rendervar = {
+    'means3D': transformed_pts,
+    'colors_precomp': get_depth_silhouette_rgbloss(params, transformed_pts),
+    'rotations': F.normalize(params['unnorm_rotations']),
+    'opacities': torch.sigmoid(params['logit_opacities']),
+    'scales': torch.exp(torch.tile(params['log_scales'], (1, 3))),
+    'means2D': torch.zeros_like(params['means3D'], requires_grad=True, device=device) + 0
+    }
+    return rendervar
 
-def transform_to_frame(params, time_idx, gaussians_grad, camera_grad, device="cuda"):
+
+
+def transform_to_frame(params, time_idx, gaussians_grad, camera_grad, params_v = None, device="cuda"):
     """
     Function to transform Isotropic Gaussians from world frame to camera frame.
     
@@ -256,11 +338,18 @@ def transform_to_frame(params, time_idx, gaussians_grad, camera_grad, device="cu
     rel_w2c[:3, :3] = build_rotation(cam_rot)
     rel_w2c[:3, 3] = cam_tran
 
+   
+
     # Get Centers and norm Rots of Gaussians in World Frame
-    if gaussians_grad:
-        pts = params['means3D']
+    if params_v == 2:
+        means3D_key = 'means3D_2'
     else:
-        pts = params['means3D'].detach()
+        means3D_key = 'means3D'    
+    
+    if gaussians_grad:
+        pts = params[means3D_key]
+    else:
+        pts = params[means3D_key].detach()
     
     # Transform Centers and Unnorm Rots of Gaussians to Camera Frame
     pts_ones = torch.ones(pts.shape[0], 1).to(device).float()
@@ -268,3 +357,58 @@ def transform_to_frame(params, time_idx, gaussians_grad, camera_grad, device="cu
     transformed_pts = (rel_w2c @ pts4.T).T[:, :3]
 
     return transformed_pts
+
+
+def transform_points_to_frame(params, w2c, device = 'cuda'):
+    """
+    Function to transform Isotropic Gaussians from world frame to camera frame.
+    
+    Args:
+        params: dict of parameters
+        w2c:  4x4 numpy matrix in SE3
+       
+    
+    Returns:
+        transformed_pts: Transformed Centers of Gaussians
+    """
+    pts = params['means3D'].detach()
+    
+    # Transform Centers and Unnorm Rots of Gaussians to Camera Frame
+    pts_ones = torch.ones(pts.shape[0], 1).to(device).float()
+    w2c_torch = torch.from_numpy(w2c).to(device).float()
+    pts4 = torch.cat((pts, pts_ones), dim=1)
+    transformed_pts = (w2c_torch @ pts4.T).T[:, :3]
+
+    return transformed_pts
+
+def filter_points_in_image(points_3d, intrinsics, H, W):
+    """
+    Filter 3D points that project within an image of size [H, W] given camera intrinsics.
+    
+    Args:
+        points_3d (torch.Tensor): Shape [N, 3], 3D points in camera frame [X, Y, Z].
+        intrinsics (torch.Tensor): Shape [3, 3], camera intrinsics matrix.
+        H (int): Image height in pixels.
+        W (int): Image width in pixels.
+    
+    Returns:
+        torch.Tensor: Subset of 3D points that project inside the image, shape [M, 3].
+    """
+    # Extract intrinsics
+    fx = intrinsics[0, 0]
+    fy = intrinsics[1, 1]
+    cx = intrinsics[0, 2]
+    cy = intrinsics[1, 2]
+
+    # Filter points with positive depth
+    valid_depth_mask = points_3d[:, 2] > 0
+    # points_3d = points_3d[valid_depth_mask]
+
+    # Project to 2D
+    X, Y, Z = points_3d[:, 0], points_3d[:, 1], points_3d[:, 2]
+    u = fx * (X / Z) + cx
+    v = fy * (Y / Z) + cy
+
+    # Check bounds
+    in_bounds_mask = (u >= 0) & (u < W) & (v >= 0) & (v < H) & valid_depth_mask
+    return in_bounds_mask

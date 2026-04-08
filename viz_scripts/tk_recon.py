@@ -53,7 +53,7 @@ class ControlPanel(tk.Frame):
         # with open(cfg['color_dict_path'], 'r') as file:
         #     self.color_dict = json.load(file)
         self.sence_name = cfg['scene_name']
-        self.semantic_ids = set([0])
+        self.semantic_ids = [0,76,150] #set([0])
 
         self.semantic_ids_value = tk.Label(master, text=', '.join(str(num) for num in sorted(self.semantic_ids)))
         self.semantic_ids_value.pack()
@@ -106,7 +106,8 @@ class ControlPanel(tk.Frame):
         cmd = {'type': Operation.SWITCH_MODE, 'payload': {'mode': mode}}
         print("Apply: ", cmd)
         self.command_queue.put(cmd)
-        if semantic_id.isdigit() and semantic_id in self.semantic_ids:
+        print("semantic ids", self.semantic_ids)
+        if int(semantic_id) in self.semantic_ids:
             cmd = {'type': Operation.APPLY_MASK, 'payload': {
                 'semantic_id': int(semantic_id) if semantic_id != '' else -1,
                 'to_keep': keep

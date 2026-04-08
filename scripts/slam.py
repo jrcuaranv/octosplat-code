@@ -22,6 +22,7 @@ from datasets.gradslam_datasets import (
     ICLDataset,
     ReplicaDataset,
     ReplicaV2Dataset,
+    EruvaeDataset,
     AzureKinectDataset,
     ScannetDataset,
     Ai2thorDataset,
@@ -49,6 +50,8 @@ def get_dataset(config_dict, basedir, sequence, **kwargs):
         return ICLDataset(config_dict, basedir, sequence, **kwargs)
     elif config_dict["dataset_name"].lower() in ["replica"]:
         return ReplicaDataset(config_dict, basedir, sequence, **kwargs)
+    elif config_dict["dataset_name"].lower() in ["eruvae"]:
+        return EruvaeDataset(config_dict, basedir, sequence, **kwargs)
     elif config_dict["dataset_name"].lower() in ["replicav2"]:
         return ReplicaV2Dataset(config_dict, basedir, sequence, **kwargs)
     elif config_dict["dataset_name"].lower() in ["azure", "azurekinect"]:
@@ -137,7 +140,7 @@ def initialize_params(init_pt_cld, num_frames, mean3_sq_dist, device, load_seman
     # channel 3-5 for rgb colors
     rgb_colors = init_pt_cld[:, 3:6]
     unnorm_rots = np.tile([1, 0, 0, 0], (num_pts, 1)) # [num_gaussians, 3]
-    logit_opacities = torch.zeros((num_pts, 1), dtype=torch.float, device=device)
+    logit_opacities = torch.zeros((num_pts, 1), dtype=torch.float, device=device) # sigmoid(zero) = 0.5=opacity
     
     params = {
         'means3D': means3D,
@@ -287,6 +290,8 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
     depth_sq = depth_sil[2, :, :].unsqueeze(0)
     uncertainty = depth_sq - depth**2
     uncertainty = uncertainty.detach()
+    entropy = -silhouette*torch.log2(silhouette) - (1-silhouette)*torch.log2(1-silhouette) #jrcv
+    entropy = torch.nan_to_num(entropy, nan=0.0) #jrcv
 
     # Semantic colors Rendering
     if load_semantics:
@@ -344,6 +349,7 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
         ax[0, 0].imshow(viz_img)
         ax[0, 0].set_title("Weighted GT RGB")
         viz_render_img = torch.clip(weighted_render_im.permute(1, 2, 0).detach().cpu(), 0, 1)
+        viz_render_seg = torch.clip(rendered_seg.permute(1, 2, 0).detach().cpu(), 0, 1)
         ax[1, 0].imshow(viz_render_img)
         ax[1, 0].set_title("Weighted Rendered RGB")
         ax[0, 1].imshow(weighted_depth[0].detach().cpu(), cmap="jet", vmin=0, vmax=6)
@@ -354,10 +360,17 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
         ax[0, 2].set_title(f"Diff RGB, Loss: {torch.round(losses['im'])}")
         ax[1, 2].imshow(diff_depth, cmap="jet", vmin=0, vmax=0.8)
         ax[1, 2].set_title(f"Diff Depth, Loss: {torch.round(losses['depth'])}")
-        ax[0, 3].imshow(presence_sil_mask.detach().cpu(), cmap="gray")
-        ax[0, 3].set_title("Silhouette Mask")
-        ax[1, 3].imshow(mask[0].detach().cpu(), cmap="gray")
-        ax[1, 3].set_title("Loss Mask")
+        # ax[0, 3].imshow(presence_sil_mask.detach().cpu(), cmap="gray")
+        # ax[0, 3].set_title("Silhouette Mask")
+        # ax[1, 3].imshow(mask[0].detach().cpu(), cmap="gray")
+        # ax[1, 3].set_title("Loss Mask")
+        # ax[1, 3].imshow(silhouette.detach().cpu(), cmap="jet")
+        # ax[1, 3].set_title("Silhoutte")
+        ax[0, 3].imshow(viz_render_seg)
+        ax[0, 3].set_title("Rendered sem.")
+        ax[1, 3].imshow(entropy.detach().cpu(), cmap="jet")
+        ax[1, 3].set_title("entropy")
+        
         # Turn off axis
         for i in range(2):
             for j in range(4):
