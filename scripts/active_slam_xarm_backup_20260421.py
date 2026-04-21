@@ -10,8 +10,8 @@ Compute viewpoint candidates directly from this script
 Prune outlier semantics (in slam_external) after mapping iterations (This part was commented)
 Add confidence of segmentation masks in loss function to tackle noise
 Prune outlier semantics just at the end
-Initialize self.params['semantic_colors'] in 0.5 (rather than current semantics) (check get_pointcloud())to reduce the effect of noise. After some optim. steps it should converge to some value
-Clip self.params[semantic_colors'] between [0,1] (in add_new_gaussians)as other values dont make sense and reduce inertia during optimization.
+Initialize params['semantic_colors'] in 0.5 (rather than current semantics) (check get_pointcloud())to reduce the effect of noise. After some optim. steps it should converge to some value
+Clip params[semantic_colors'] between [0,1] (in add_new_gaussians)as other values dont make sense and reduce inertia during optimization.
 Added a fixed depth error threshold parameters in add_new_gaussians for robustness
 Distance threshold in osamcep changed to 0.15 and box_size_on_frame = 0.3 //leverage more information around clusters
 Octomap was edited to keep all rays, regarding the color voxel, as this issue does not affect the new viewp. evaluation
@@ -84,14 +84,14 @@ from utils.common_utils import seed_everything, save_params_ckpt, save_params
 from utils.keyframe_selection import keyframe_selection_overlap
 from utils.recon_helpers import setup_camera
 from utils.slam_helpers import (
-    get_c2w_from_params,transformed_params2rendervar, filter_points_in_image, transformed_params2depth_silhouette_rgbloss, transformed_entropy2rendervar, transformed_params2depthplussilhouette,
+    transformed_params2rendervar, filter_points_in_image, transformed_params2depth_silhouette_rgbloss, transformed_entropy2rendervar, transformed_params2depthplussilhouette,
     transformed_semantics2rendervar, transformed_rgb_loss_rendervar, transform_to_frame, transform_points_to_frame, l1_loss_v1, matrix_to_quaternion
 )
 from utils.slam_external import calc_ssim, build_rotation, prune_outlier_semantics, prune_gaussians, densify, prune_aux_gaussians
 
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 
-from utils.utils_sgs_slam import (render_any_cam, render_cam, get_pointcloud, downsample_mask, get_initial_pointcloud, initialize_params,
+from utils.utils_sgs_slam import (render_any_cam, get_pointcloud, downsample_mask, get_initial_pointcloud, initialize_params,
                                   initialize_optimizer, initialize_first_timestep, initialize_new_params,
                                   add_new_gaussians, convert_params_to_store, initialize_camera_pose, get_loss)
 
@@ -130,19 +130,19 @@ class ActiveSLAM:
         else:
             prefix = 'gazebo_robot'
         
-        self.output_directory = self.config['active_mapping']['output_dir']
+        self.output_directory = config['active_mapping']['output_dir']
         # rgb_topic = config['active_mapping'][prefix]['rgb_topic']
         # depth_topic = config['active_mapping'][prefix]['depth_topic']
         rgb_topic = '/camera2/color/rgb'
         depth_topic = '/camera2/color/depth'
         semantics_topic = '/camera2/color/semantics'
         confidence_topic = '/camera2/color/confidence'
-        self.crop_size = self.config['active_mapping'][prefix]['crop_size']
-        self.fx = self.config['active_mapping'][prefix]['fx']
-        self.fy = self.config['active_mapping'][prefix]['fy']
-        self.cx = self.config['active_mapping'][prefix]['cx']
-        self.cy = self.config['active_mapping'][prefix]['cy']
-        self.T_link6_camframe = np.array(self.config['active_mapping'][prefix]['T_link6_camframe'])
+        self.crop_size = config['active_mapping'][prefix]['crop_size']
+        self.fx = config['active_mapping'][prefix]['fx']
+        self.fy = config['active_mapping'][prefix]['fy']
+        self.cx = config['active_mapping'][prefix]['cx']
+        self.cy = config['active_mapping'][prefix]['cy']
+        self.T_link6_camframe = np.array(config['active_mapping'][prefix]['T_link6_camframe'])
 
         # rospy.Subscriber(rgb_topic, CompressedImage, self.callback_image_raw)
         # rospy.Subscriber(depth_topic, Image, self.callback_depth_topic)
@@ -168,9 +168,6 @@ class ActiveSLAM:
         self.rgbd_slam_server = rospy.Service("/sgs/rgbd_slam", Empty, self.rgbd_slam_callback)
         rospy.loginfo("Service '/sgs/save_params' is ready.")
     
-        # server to perform full pose and map optimization
-        self.full_optimization_server = rospy.Service("/sgs/full_optimization", Empty, self.full_optimization_callback)
-        rospy.loginfo("Service '/sgs/full_optimization' is ready.")
         
 
         # rospy.wait_for_service('querry_RLE')
@@ -184,7 +181,7 @@ class ActiveSLAM:
         
         self.init_variables()
         # self.run_mapping_multiple_plants()
-        # self.rgbd_slam(self.config, self.paramms_file_prefix)
+        # self.rgbd_slam(self.config, self.params_file_prefix)
         
 
         rate = rospy.Rate(0.5)
@@ -194,7 +191,7 @@ class ActiveSLAM:
             if self.new_rgbd_slam_session:
                 time.sleep(5.0) # wait for any ongoing process to finish
                 self.init_variables()
-                self.rgbd_slam(self.config, self.paramms_file_prefix)
+                self.rgbd_slam(self.config, self.params_file_prefix)
             
             print("Running...")
             
@@ -221,38 +218,24 @@ class ActiveSLAM:
         self.add_depth_noise = False
         self.viewpoint_count = 0
         self.best_viewpoints_list= []
-        self.paramms_copy = None
-        self.paramms_file_prefix = "xarm_"
+        self.params_copy = None
+        self.params_file_prefix = "xarm_"
         self.new_rgbd_slam_session = False
-        self.params = None
-        params_opt_exclude = None
-        self.keyframe_list = []
-        self.numbers_iters_mapping = None
-        self.intrinsics = None
-        self.gt_w2c_all_frames = []
-        self.first_frame_w2c = None
-        self.variables = None
-        self.cam = None
-        self.device = None
-        self.eval_dir = None
-        self.full_optimization_requested = False
-        self.episode_dir = None
 
     def save_params_callback(self, req):
         rospy.loginfo("Saving parameters...")
         # Get current time
         now = datetime.now()
         timestamp = now.strftime("%Y-%m-%d-%H-%M-%S")
-        file_prefix = timestamp + '_' +self.paramms_file_prefix
-        save_params(self.paramms_copy, self.episode_dir, save_ply=False, file_prefix=file_prefix)
-        save_params(self.paramms_copy, self.episode_dir, save_ply=False, file_prefix=self.paramms_file_prefix)
-        self.save_groundtruth_and_rendered_images()
+        file_prefix = timestamp + '_' +self.params_file_prefix
+        save_params(self.params_copy, self.output_directory, save_ply=False, file_prefix=file_prefix)
+        save_params(self.params_copy, self.output_directory, save_ply=False, file_prefix=self.params_file_prefix)
         return EmptyResponse()
     def callback_octomap_status(self, msg):
         self.octomap_status = msg.data
 
     def evaluation(self, data_points, dist_threshold):
-        output_dir = self.episode_dir
+        output_dir = self.output_directory
         file_suffix = '_plant' + str(self.plant_id) + '_pose' + str(self.initial_pose_id) + '_' + self.score_method + '.txt'
         if data_points is not None:
             if data_points.shape[0] > 0:
@@ -416,7 +399,7 @@ class ActiveSLAM:
         gray_image = gray_image.astype(np.uint8)
 
         return gray_image
-    def get_sample_data(self, dtype = torch.float):
+    def get_sample_data(self, device="cuda:0", dtype = torch.float):
         self.upgrade_transforms()
         intrinsics = torch.from_numpy(self.K)
         # gt_pose_w_camframe = self.get_transform('world', 'camera2_frame')
@@ -460,13 +443,13 @@ class ActiveSLAM:
         confidence_map = copy.deepcopy(self.confidence_image).astype(float) / 255.0
         confidence_map = torch.from_numpy(confidence_map)
         return_data = (
-            rgb_image.to(self.device).type(dtype),
-            depth.to(self.device).type(dtype),
-            intrinsics.to(self.device).type(dtype),
-            T_wc_rel.to(self.device).type(dtype),
-            semantic_id.to(self.device).type(dtype),
-            semantic_img.to(self.device).type(dtype),
-            confidence_map.to(self.device).type(dtype),
+            rgb_image.to(device).type(dtype),
+            depth.to(device).type(dtype),
+            intrinsics.to(device).type(dtype),
+            T_wc_rel.to(device).type(dtype),
+            semantic_id.to(device).type(dtype),
+            semantic_img.to(device).type(dtype),
+            confidence_map.to(device).type(dtype),
         )
         self.new_image_data = None
         self.bgr_image = None
@@ -494,16 +477,12 @@ class ActiveSLAM:
         print(f"{config}")
 
         # Create Output Directories
-        timestamp_str = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-        self.episode_dir = os.path.join(self.output_directory, f"{timestamp_str}_sgs_output")
-        os.makedirs(self.episode_dir, exist_ok=True)
-        # output_dir = os.path.join(config["workdir"], config["run_name"])
-        output_dir = self.episode_dir
-        self.eval_dir = os.path.join(output_dir, "eval")
-        os.makedirs(self.eval_dir, exist_ok=True)
+        output_dir = os.path.join(config["workdir"], config["run_name"])
+        eval_dir = os.path.join(output_dir, "eval")
+        os.makedirs(eval_dir, exist_ok=True)
         
         # Get Device
-        self.device = torch.device(config["primary_device"])
+        device = torch.device(config["primary_device"])
         if config["primary_device"].startswith("cuda:"):
             device_id = int(config["primary_device"].split(':')[1])
             torch.cuda.set_device(device_id)
@@ -562,17 +541,17 @@ class ActiveSLAM:
                 plt.figure(1)
                 plt.imshow(self.depth_image)
                 plt.show()
-        self.params, self.variables, self.intrinsics, self.first_frame_w2c, self.cam, \
-            self.params_opt_exclude = initialize_first_timestep(dataset_0, num_frames, config['scene_radius_depth_ratio'],
-                                                        config['mean_sq_dist_method'], device=self.device,
+        params, variables, intrinsics, first_frame_w2c, cam, \
+            params_opt_exclude = initialize_first_timestep(dataset_0, num_frames, config['scene_radius_depth_ratio'],
+                                                        config['mean_sq_dist_method'], device=device,
                                                         load_semantics=load_semantics)
         # Initialize list to keep track of Keyframes
-        self.keyframe_list = []
+        keyframe_list = []
         keyframe_time_indices = []
         timestamp_keyframes = []
         
         # Init Variables to keep track of ground truth poses and runtimes
-        self.gt_w2c_all_frames = []
+        gt_w2c_all_frames = []
         tracking_iter_time_sum = 0
         tracking_iter_time_count = 0
         mapping_iter_time_sum = 0
@@ -588,7 +567,7 @@ class ActiveSLAM:
         for time_idx in tqdm(range(checkpoint_time_idx, num_frames)):
             
             print("Current time idx:", time_idx)
-            print("Number of gaussians:", self.params['means3D'].shape[0])
+            print("Number of gaussians:", params['means3D'].shape[0])
             
             if time_idx == 0:
                 color, depth, _, gt_pose, semantic_id, semantic_color, confidence_map = dataset_0
@@ -612,37 +591,29 @@ class ActiveSLAM:
             T_wc = np.block([[R, t],
                                     [0.0, 0.0, 0.0, 1.0]])
             T_cw = np.linalg.inv(T_wc)
-            # render_any_cam(params, T_cw, device=self.device)
+            # render_any_cam(params, T_cw, device=device)
             if time_idx>0:
                 # self.pub_gs_status.publish(Float32(1.0))
                 valid_depth = False
                 while valid_depth == False:
                     self.pub_gs_status.publish(Float32(1.0))
-
+                
                     while (self.new_image_data == None):
                         print("waiting for next sample image")
                         time.sleep(0.5)
                         if self.new_rgbd_slam_session == True:
                             print("New RGBD SLAM session triggered. Exiting current SLAM session.")
                             return
-                        while self.full_optimization_requested == True:
-                            time.sleep(0.5)
-                        # if self.full_optimization_requested == True:
-                        #     print("Full optimization requested. Exiting current SLAM session.")
-                        #     self.full_pose_optimization()
-                        #     self.full_map_optimization()
-                        #     self.full_optimization_requested = False
-                            
                     color, depth, _, gt_pose, semantic_id, semantic_color, confidence_map = self.get_sample_data()
                     valid_depth = depth.sum().item() > 0
                     if (valid_depth == False):
                         print("No valid depth map")
-                sem_target = torch.tensor([1.0,0,0]).to(self.device) #red
-                rmse = torch.linalg.norm(sem_target - self.params['semantic_colors'].clip(0,1), axis=1)/math.sqrt(3)
-                # cos_similarity = F.cosine_similarity(sem_target, self.params['semantic_colors'],dim=1)
+                sem_target = torch.tensor([1.0,0,0]).to(device) #red
+                rmse = torch.linalg.norm(sem_target - params['semantic_colors'].clip(0,1), axis=1)/math.sqrt(3)
+                # cos_similarity = F.cosine_similarity(sem_target, params['semantic_colors'],dim=1)
                 
                 sem_mask = (rmse < 0.01) # TODO add parameters
-                stable_gaussians_mask = (self.params['opt_count'] > 10) # TODO add parameters
+                stable_gaussians_mask = (params['opt_count'] > 10) # TODO add parameters
                 target_sem_mask = sem_mask & stable_gaussians_mask
 
                 n_sem_gaussians = sem_mask.sum().item()
@@ -651,7 +622,7 @@ class ActiveSLAM:
                 print("number of sem gaussians:", n_sem_gaussians)
                 print("Number of stable sem gaussians:", n_stable_sem_gaussians)
 
-                target_gaussians_3D = self.params['means3D'][target_sem_mask].detach().cpu().numpy()
+                target_gaussians_3D = params['means3D'][target_sem_mask].detach().cpu().numpy()
                 # np.savetxt("/home/jose/gaussians.txt", target_gaussians_3D)
 
                 if target_gaussians_3D.shape[0] > 0:
@@ -731,13 +702,13 @@ class ActiveSLAM:
             # Process RGB-D Data
             color = color.permute(2, 0, 1) / 255
             depth = depth.permute(2, 0, 1)
-            self.gt_w2c_all_frames.append(gt_w2c)
-            curr_gt_w2c = self.gt_w2c_all_frames
+            gt_w2c_all_frames.append(gt_w2c)
+            curr_gt_w2c = gt_w2c_all_frames
             # Optimize only current time step for tracking
             iter_time_idx = time_idx
             # Initialize Mapping Data for selected frame
-            curr_data = {'cam': self.cam, 'im': color, 'depth': depth, 'id': iter_time_idx, 'intrinsics': self.intrinsics,
-                        'w2c': self.first_frame_w2c, 'iter_gt_w2c_list': curr_gt_w2c}
+            curr_data = {'cam': cam, 'im': color, 'depth': depth, 'id': iter_time_idx, 'intrinsics': intrinsics,
+                        'w2c': first_frame_w2c, 'iter_gt_w2c_list': curr_gt_w2c}
             
             # T_cw = gt_w2c.detach().cpu().numpy()
             # self.evaluate_viewpoint(params, curr_data, T_cw)
@@ -754,9 +725,9 @@ class ActiveSLAM:
 
             # Optimization Iterations
             
-            self.num_iters_mapping = config['mapping']['num_iters']
+            num_iters_mapping = config['mapping']['num_iters']
             if time_idx == num_frames-1: 
-                self.num_iters_mapping = 2*self.num_iters_mapping #jrcv, to refine the optimization in the last frame
+                num_iters_mapping = 2*num_iters_mapping #jrcv, to refine the optimization in the last frame
             
             if time_idx >= 0:
                 with torch.no_grad():
@@ -773,17 +744,17 @@ class ActiveSLAM:
                     # SE3_error[0:3,0:3] = rot_error
                     # SE3_error[0:3,3] = trans_error
                     w2c_init_plus_error = np.matmul(w2c_init, SE3_error)
-                    self.params = initialize_camera_pose(self.params, time_idx,
+                    params = initialize_camera_pose(params, time_idx,
                                                 forward_prop=config['tracking']['forward_prop'],
                                                 rel_w2c_initial_guess = w2c_init)
-            # Step 1: Tracking (Pose refinement )
+            # Step 1: Tracking
             tracking_start_time = time.time()
             if time_idx > 0 and not config['tracking']['use_gt_poses']:
                 # Reset Optimizer & Learning Rates for tracking
-                optimizer = initialize_optimizer(self.params, self.params_opt_exclude, config['tracking']['lrs'], tracking=True)
+                optimizer = initialize_optimizer(params, params_opt_exclude, config['tracking']['lrs'], tracking=True)
                 # Keep Track of Best Candidate Rotation & Translation
-                candidate_cam_unnorm_rot = self.params['cam_unnorm_rots'][..., time_idx].detach().clone()
-                candidate_cam_tran = self.params['cam_trans'][..., time_idx].detach().clone()
+                candidate_cam_unnorm_rot = params['cam_unnorm_rots'][..., time_idx].detach().clone()
+                candidate_cam_tran = params['cam_trans'][..., time_idx].detach().clone()
                 current_min_loss = float(1e20)
                 # Tracking Optimization
                 iter = 0
@@ -793,10 +764,10 @@ class ActiveSLAM:
                 while True:
                     iter_start_time = time.time()
                     # Loss for current frame
-                    loss, self.variables, losses = get_loss(self.params, tracking_curr_data, self.variables, iter_time_idx, config['tracking']['loss_weights'],
+                    loss, variables, losses = get_loss(params, tracking_curr_data, variables, iter_time_idx, config['tracking']['loss_weights'],
                                                     config['tracking']['use_sil_for_loss'], config['tracking']['sil_thres'],
                                                     config['tracking']['use_l1'], config['tracking']['ignore_outlier_depth_loss'],
-                                                    tracking=True, device=self.device, plot_dir=self.eval_dir,
+                                                    tracking=True, device=device, plot_dir=eval_dir,
                                                     visualize_tracking_loss=config['tracking']['visualize_tracking_loss'],
                                                     tracking_iteration=iter, load_semantics=load_semantics)
                     # Backprop
@@ -810,12 +781,12 @@ class ActiveSLAM:
                         # Save the best candidate rotation & translation
                         if loss < current_min_loss:
                             current_min_loss = loss
-                            candidate_cam_unnorm_rot = self.params['cam_unnorm_rots'][..., time_idx].detach().clone()
-                            candidate_cam_tran = self.params['cam_trans'][..., time_idx].detach().clone()
+                            candidate_cam_unnorm_rot = params['cam_unnorm_rots'][..., time_idx].detach().clone()
+                            candidate_cam_tran = params['cam_trans'][..., time_idx].detach().clone()
                         # Report Progress
                         if config['report_iter_progress']:
-                            # report_progress(self.params, tracking_curr_data, iter+1, progress_bar, iter_time_idx, sil_thres=config['tracking']['sil_thres'],
-                            #                     tracking=True, device=self.device, load_semantics=load_semantics)
+                            # report_progress(params, tracking_curr_data, iter+1, progress_bar, iter_time_idx, sil_thres=config['tracking']['sil_thres'],
+                            #                     tracking=True, device=device, load_semantics=load_semantics)
                             pass
                         else:
                             progress_bar.update(1)
@@ -839,8 +810,8 @@ class ActiveSLAM:
                 # Copy over the best candidate rotation & translation
                 with torch.no_grad():
                     # pass #TODO REMOVE
-                    self.params['cam_unnorm_rots'][..., time_idx] = candidate_cam_unnorm_rot
-                    self.params['cam_trans'][..., time_idx] = candidate_cam_tran
+                    params['cam_unnorm_rots'][..., time_idx] = candidate_cam_unnorm_rot
+                    params['cam_trans'][..., time_idx] = candidate_cam_tran
             elif time_idx > 0: #and config['tracking']['use_gt_poses']: #TODO change
                 with torch.no_grad():
                     # Get the ground truth pose relative to frame 0
@@ -849,8 +820,8 @@ class ActiveSLAM:
                     rel_w2c_rot_quat = matrix_to_quaternion(rel_w2c_rot)
                     rel_w2c_tran = rel_w2c[:3, 3].detach()
                     # Update the camera parameters
-                    self.params['cam_unnorm_rots'][..., time_idx] = rel_w2c_rot_quat
-                    self.params['cam_trans'][..., time_idx] = rel_w2c_tran
+                    params['cam_unnorm_rots'][..., time_idx] = rel_w2c_rot_quat
+                    params['cam_trans'][..., time_idx] = rel_w2c_tran
             # Update the runtime numbers
             tracking_end_time = time.time()
             tracking_frame_time_sum += tracking_end_time - tracking_start_time
@@ -862,12 +833,12 @@ class ActiveSLAM:
                     progress_bar = tqdm(range(1), desc=f"Tracking Result Time Step: {time_idx}")
                     with torch.no_grad():
                         pass
-                        # report_progress(self.params, tracking_curr_data, 1, progress_bar, iter_time_idx, sil_thres=config['tracking']['sil_thres'],
-                        #                     tracking=True, device=self.device, load_semantics=load_semantics)
+                        # report_progress(params, tracking_curr_data, 1, progress_bar, iter_time_idx, sil_thres=config['tracking']['sil_thres'],
+                        #                     tracking=True, device=device, load_semantics=load_semantics)
                     progress_bar.close()
                 except:
                     ckpt_output_dir = os.path.join(config["workdir"], config["run_name"])
-                    save_params_ckpt(self.params, ckpt_output_dir, time_idx)
+                    save_params_ckpt(params, ckpt_output_dir, time_idx)
                     print('Failed to evaluate trajectory.')
             print("Densification step...")
             # Step 2: Densification & KeyFrame-based Mapping
@@ -878,30 +849,30 @@ class ActiveSLAM:
                     densify_curr_data = curr_data
 
                     # Add new Gaussians to the scene based on the Silhouette
-                    self.params, self.variables = add_new_gaussians(self.params, self.params_opt_exclude, self.variables, densify_curr_data, 
+                    params, variables = add_new_gaussians(params, params_opt_exclude, variables, densify_curr_data, 
                                                         config['mapping']['sil_thres'], time_idx, config['mean_sq_dist_method'],
-                                                        self.device, load_semantics=load_semantics)
+                                                        device, load_semantics=load_semantics)
                     
                     
                 # Update keyframes for gaussian mapping
                 with torch.no_grad():
                     # Get the current estimated rotation & translation
-                    curr_cam_rot = F.normalize(self.params['cam_unnorm_rots'][..., time_idx].detach())
-                    curr_cam_tran = self.params['cam_trans'][..., time_idx].detach()
-                    curr_w2c = torch.eye(4).to(self.device).float()
+                    curr_cam_rot = F.normalize(params['cam_unnorm_rots'][..., time_idx].detach())
+                    curr_cam_tran = params['cam_trans'][..., time_idx].detach()
+                    curr_w2c = torch.eye(4).to(device).float()
                     curr_w2c[:3, :3] = build_rotation(curr_cam_rot)
                     curr_w2c[:3, 3] = curr_cam_tran
 
                     # Select Keyframes for Mapping
                     num_keyframes = config['mapping_window_size']-2
                     print("Keyframe selection overlap...")
-                    selected_keyframes = keyframe_selection_overlap(depth, curr_w2c, self.intrinsics, self.keyframe_list[:-1],
-                                                                    num_keyframes, device=self.device)
-                    selected_time_idx = [self.keyframe_list[frame_idx]['id'] for frame_idx in selected_keyframes]
-                    if len(self.keyframe_list) > 0:
+                    selected_keyframes = keyframe_selection_overlap(depth, curr_w2c, intrinsics, keyframe_list[:-1],
+                                                                    num_keyframes, device=device)
+                    selected_time_idx = [keyframe_list[frame_idx]['id'] for frame_idx in selected_keyframes]
+                    if len(keyframe_list) > 0:
                         # Add last keyframe to the selected keyframes
-                        selected_time_idx.append(self.keyframe_list[-1]['id'])
-                        selected_keyframes.append(len(self.keyframe_list)-1)
+                        selected_time_idx.append(keyframe_list[-1]['id'])
+                        selected_keyframes.append(len(keyframe_list)-1)
                     # Add current frame to the selected keyframes
                     selected_time_idx.append(time_idx)
                     selected_keyframes.append(-1)
@@ -913,38 +884,38 @@ class ActiveSLAM:
                 # if time_idx%5 == 0 and time_idx >0:
                     
                 #     for idx in range(len(selected_keyframes)-1):
-                #         iter_time_idx = self.keyframe_list[idx]['id']
-                #         iter_color = self.keyframe_list[idx]['color']
-                #         iter_depth = self.keyframe_list[idx]['depth']
-                #         iter_confidence_map = self.keyframe_list[idx]['confidence_map']
+                #         iter_time_idx = keyframe_list[idx]['id']
+                #         iter_color = keyframe_list[idx]['color']
+                #         iter_depth = keyframe_list[idx]['depth']
+                #         iter_confidence_map = keyframe_list[idx]['confidence_map']
 
-                #         iter_gt_w2c = self.gt_w2c_all_frames[:iter_time_idx+1]
-                #         iter_data = {'cam': self.cam, 'im': iter_color, 'depth': iter_depth, 'confidence_map': iter_confidence_map, 'id': iter_time_idx, 
-                #                     'intrinsics': self.intrinsics, 'w2c': self.first_frame_w2c, 'iter_gt_w2c_list': iter_gt_w2c}
+                #         iter_gt_w2c = gt_w2c_all_frames[:iter_time_idx+1]
+                #         iter_data = {'cam': cam, 'im': iter_color, 'depth': iter_depth, 'confidence_map': iter_confidence_map, 'id': iter_time_idx, 
+                #                     'intrinsics': intrinsics, 'w2c': first_frame_w2c, 'iter_gt_w2c_list': iter_gt_w2c}
                 #         # Add semantic id and colors
                         
-                #         iter_data['semantic_id'] = self.keyframe_list[idx]['semantic_id']
-                #         iter_data['semantic_color'] = self.keyframe_list[idx]['semantic_color']
+                #         iter_data['semantic_id'] = keyframe_list[idx]['semantic_id']
+                #         iter_data['semantic_color'] = keyframe_list[idx]['semantic_color']
                 #         # adding new gaussians
                 #         print("+++++++++++++++++++++++++ Adding new gaussians test +++++++++++++++++++++++")
                 #         print("idx:", idx, " time idx:", iter_time_idx)
-                #         self.params, self.variables = add_new_gaussians(self.params, self.params_opt_exclude, self.variables, iter_data, 
+                #         params, variables = add_new_gaussians(params, params_opt_exclude, variables, iter_data, 
                 #                                             config['mapping']['sil_thres'], iter_time_idx, config['mean_sq_dist_method'],
-                #                                             self.device, load_semantics=load_semantics)
+                #                                             device, load_semantics=load_semantics)
                     
                 ######################## end test
                 
                 # Reset Optimizer & Learning Rates for Full Map Optimization
-                optimizer = initialize_optimizer(self.params, self.params_opt_exclude, config['mapping']['lrs'], tracking=False) 
+                optimizer = initialize_optimizer(params, params_opt_exclude, config['mapping']['lrs'], tracking=False) 
 
                 # Mapping
                 print("Mapping...")
                 mapping_start_time = time.time()
-                if self.num_iters_mapping > 0:
-                    progress_bar = tqdm(range(self.num_iters_mapping), desc=f"Mapping Time Step: {time_idx}")
+                if num_iters_mapping > 0:
+                    progress_bar = tqdm(range(num_iters_mapping), desc=f"Mapping Time Step: {time_idx}")
                 loss_compute_times = []
                 prune_compute_times = []
-                for iter in range(self.num_iters_mapping):
+                for iter in range(num_iters_mapping):
                     # if time_idx ==0 and iter > 5: # jrcv test
                     #     break
                     iter_start_time = time.time()
@@ -959,21 +930,21 @@ class ActiveSLAM:
                         iter_confidence_map = confidence_map
                     else:
                         # Use Keyframe Data
-                        iter_time_idx = self.keyframe_list[selected_rand_keyframe_idx]['id']
-                        iter_color = self.keyframe_list[selected_rand_keyframe_idx]['color']
-                        iter_depth = self.keyframe_list[selected_rand_keyframe_idx]['depth']
-                        iter_confidence_map = self.keyframe_list[selected_rand_keyframe_idx]['confidence_map']
-                    iter_gt_w2c = self.gt_w2c_all_frames[:iter_time_idx+1]
-                    iter_data = {'cam': self.cam, 'im': iter_color, 'depth': iter_depth, 'confidence_map': iter_confidence_map, 'id': iter_time_idx, 
-                                'intrinsics': self.intrinsics, 'w2c': self.first_frame_w2c, 'iter_gt_w2c_list': iter_gt_w2c}
+                        iter_time_idx = keyframe_list[selected_rand_keyframe_idx]['id']
+                        iter_color = keyframe_list[selected_rand_keyframe_idx]['color']
+                        iter_depth = keyframe_list[selected_rand_keyframe_idx]['depth']
+                        iter_confidence_map = keyframe_list[selected_rand_keyframe_idx]['confidence_map']
+                    iter_gt_w2c = gt_w2c_all_frames[:iter_time_idx+1]
+                    iter_data = {'cam': cam, 'im': iter_color, 'depth': iter_depth, 'confidence_map': iter_confidence_map, 'id': iter_time_idx, 
+                                'intrinsics': intrinsics, 'w2c': first_frame_w2c, 'iter_gt_w2c_list': iter_gt_w2c}
                     # Add semantic id and colors
                     
                     if selected_rand_keyframe_idx == -1:
                         iter_data['semantic_id'] = semantic_id
                         iter_data['semantic_color'] = semantic_color
                     else:
-                        iter_data['semantic_id'] = self.keyframe_list[selected_rand_keyframe_idx]['semantic_id']
-                        iter_data['semantic_color'] = self.keyframe_list[selected_rand_keyframe_idx]['semantic_color']
+                        iter_data['semantic_id'] = keyframe_list[selected_rand_keyframe_idx]['semantic_id']
+                        iter_data['semantic_color'] = keyframe_list[selected_rand_keyframe_idx]['semantic_color']
                     # Loss for current frame
                     
                     if (iter+1) % 9800 == 0:
@@ -984,10 +955,10 @@ class ActiveSLAM:
 
                     # visualization = False
                     loss_start_time = time.time()
-                    loss, self.variables, losses = get_loss(self.params, iter_data, self.variables, iter_time_idx, config['mapping']['loss_weights'],
+                    loss, variables, losses = get_loss(params, iter_data, variables, iter_time_idx, config['mapping']['loss_weights'],
                                                     config['mapping']['use_sil_for_loss'], config['mapping']['sil_thres'],
                                                     config['mapping']['use_l1'], config['mapping']['ignore_outlier_depth_loss'],
-                                                    mapping=True, device=self.device, plot_dir = self.eval_dir, load_semantics=load_semantics, visualization = visualization)
+                                                    mapping=True, device=device, plot_dir = eval_dir, load_semantics=load_semantics, visualization = visualization)
                     loss_end_time = time.time()
                     loss_compute_times.append(loss_end_time - loss_start_time)
                     # Backprop
@@ -997,14 +968,14 @@ class ActiveSLAM:
                         
                         prune_start_time = time.time()
                         if config['mapping']['prune_gaussians']:
-                            self.params, self.variables = prune_gaussians(self.params, self.params_opt_exclude, self.variables, optimizer, iter, config['mapping']['pruning_dict'])
-                            # if iter == self.num_iters_mapping - 1:
-                            #     params, self.variables = prune_outlier_semantics(params, self.params_opt_exclude, self.variables, optimizer)
+                            params, variables = prune_gaussians(params, params_opt_exclude, variables, optimizer, iter, config['mapping']['pruning_dict'])
+                            # if iter == num_iters_mapping - 1:
+                            #     params, variables = prune_outlier_semantics(params, params_opt_exclude, variables, optimizer)
                         prune_end_time = time.time()
                         prune_compute_times.append(prune_end_time - prune_start_time)
                         # Gaussian-Splatting's Gradient-based Densification
                         if config['mapping']['use_gaussian_splatting_densification']:
-                            self.params, self.variables = densify(self.params, self.variables, optimizer, iter, config['mapping']['densify_dict'], self.params_opt_exclude, device=self.device)
+                            params, variables = densify(params, variables, optimizer, iter, config['mapping']['densify_dict'], params_opt_exclude, device=device)
                             
                         # Optimizer Update
 
@@ -1013,15 +984,15 @@ class ActiveSLAM:
                         
                         #test clipping semantic colors jrcv, TODO Check
                         # if  iter % 10 ==0:
-                        #     np.savetxt('/home/jose/params.txt',self.params['semantic_colors'].detach().cpu().numpy())
-                        #     np.savetxt('/home/jose/means3D.txt',self.params['means3D'].detach().cpu().numpy())
+                        #     np.savetxt('/home/jose/params.txt',params['semantic_colors'].detach().cpu().numpy())
+                        #     np.savetxt('/home/jose/means3D.txt',params['means3D'].detach().cpu().numpy())
 
                         #     input("Press enter to continue")
                         # Report Progress
                         if config['report_iter_progress']:
                             pass
                             # report_progress(params, iter_data, iter+1, progress_bar, iter_time_idx, sil_thres=config['mapping']['sil_thres'], 
-                            #                     mapping=True, device=self.device, load_semantics=load_semantics, online_time_idx=time_idx)
+                            #                     mapping=True, device=device, load_semantics=load_semantics, online_time_idx=time_idx)
                         else:
                             progress_bar.update(1)
                     # Update the runtime numbers
@@ -1029,7 +1000,7 @@ class ActiveSLAM:
                     mapping_iter_time_sum += iter_end_time - iter_start_time
                     mapping_iter_time_count += 1
                 
-                if self.num_iters_mapping > 0:
+                if num_iters_mapping > 0:
                     progress_bar.close()
                 # Update the runtime numbers
                 mapping_end_time = time.time()
@@ -1045,12 +1016,12 @@ class ActiveSLAM:
                         progress_bar = tqdm(range(1), desc=f"Mapping Result Time Step: {time_idx}")
                         with torch.no_grad():
                            pass
-                        #    report_progress(self.params, curr_data, 1, progress_bar, time_idx, sil_thres=config['mapping']['sil_thres'], 
-                        #                         mapping=True, device=self.device, load_semantics=load_semantics, online_time_idx=time_idx)
+                        #    report_progress(params, curr_data, 1, progress_bar, time_idx, sil_thres=config['mapping']['sil_thres'], 
+                        #                         mapping=True, device=device, load_semantics=load_semantics, online_time_idx=time_idx)
                         progress_bar.close()
                     except:
                         ckpt_output_dir = os.path.join(config["workdir"], config["run_name"])
-                        save_params_ckpt(self.params, ckpt_output_dir, time_idx)
+                        save_params_ckpt(params, ckpt_output_dir, time_idx)
                         print('Failed to evaluate trajectory.')
             
             # Add frame to keyframe list
@@ -1058,9 +1029,9 @@ class ActiveSLAM:
                         (time_idx == num_frames-2)) and (not torch.isinf(curr_gt_w2c[-1]).any()) and (not torch.isnan(curr_gt_w2c[-1]).any()):
                 with torch.no_grad():
                     # Get the current estimated rotation & translation
-                    curr_cam_rot = F.normalize(self.params['cam_unnorm_rots'][..., time_idx].detach())
-                    curr_cam_tran = self.params['cam_trans'][..., time_idx].detach()
-                    curr_w2c = torch.eye(4).to(self.device).float()
+                    curr_cam_rot = F.normalize(params['cam_unnorm_rots'][..., time_idx].detach())
+                    curr_cam_tran = params['cam_trans'][..., time_idx].detach()
+                    curr_w2c = torch.eye(4).to(device).float()
                     curr_w2c[:3, :3] = build_rotation(curr_cam_rot)
                     curr_w2c[:3, 3] = curr_cam_tran
                     # Initialize Keyframe Info
@@ -1069,16 +1040,16 @@ class ActiveSLAM:
                     curr_keyframe['semantic_color'] = semantic_color
                     curr_keyframe['confidence_map'] = confidence_map
                     # Add to keyframe list
-                    self.keyframe_list.append(curr_keyframe)
+                    keyframe_list.append(curr_keyframe)
                     keyframe_time_indices.append(time_idx)
             
             # Checkpoint every iteration
             if time_idx % config["checkpoint_interval"] == 0 and config['save_checkpoints']:
                 ckpt_output_dir = os.path.join(config["workdir"], config["run_name"])
-                save_params_ckpt(self.params, ckpt_output_dir, time_idx)
+                save_params_ckpt(params, ckpt_output_dir, time_idx)
                 np.save(os.path.join(ckpt_output_dir, f"keyframe_time_indices{time_idx}.npy"), np.array(keyframe_time_indices))
             
-            self.paramms_copy = copy.deepcopy(self.params) 
+            self.params_copy = copy.deepcopy(params) 
             
             torch.cuda.empty_cache()
 
@@ -1088,7 +1059,7 @@ class ActiveSLAM:
             # Insert -1 for placeholder
             timestamp_keyframes_df = pd.DataFrame([inner + [-1 for _ in range(max_length - len(inner))] \
                                                 for inner in timestamp_keyframes])
-            timestamp_keyframes_df.to_csv(os.path.join(self.eval_dir, f"timestamp_keyframes.csv"), \
+            timestamp_keyframes_df.to_csv(os.path.join(eval_dir, f"timestamp_keyframes.csv"), \
                                         index=False, header=False, na_rep='-1')
 
         # Compute Average Runtimes
@@ -1109,168 +1080,23 @@ class ActiveSLAM:
         
         
         # remove auxiliar params, jrcv
-        # self.params, self.variables = prune_aux_gaussians(self.params, self.params_opt_exclude, self.variables, optimizer)
-        # self.params, self.variables = prune_outlier_semantics(self.params, self.params_opt_exclude, self.variables, optimizer)
+        # params, variables = prune_aux_gaussians(params, params_opt_exclude, variables, optimizer)
+        # params, variables = prune_outlier_semantics(params, params_opt_exclude, variables, optimizer)
         # Add Camera Parameters to Save them
-        self.params['timestep'] = self.variables['timestep']
-        self.params['intrinsics'] = self.intrinsics.detach().cpu().numpy()
-        self.params['w2c'] = self.first_frame_w2c.detach().cpu().numpy()
-        self.params['org_width'] = dataset_config["desired_image_width"]
-        self.params['org_height'] = dataset_config["desired_image_height"]
-        self.params['gt_w2c_all_frames'] = []
-        for gt_w2c_tensor in self.gt_w2c_all_frames:
-            self.params['gt_w2c_all_frames'].append(gt_w2c_tensor.detach().cpu().numpy())
-        self.params['gt_w2c_all_frames'] = np.stack(self.params['gt_w2c_all_frames'], axis=0)
-        self.params['keyframe_time_indices'] = np.array(keyframe_time_indices)
+        params['timestep'] = variables['timestep']
+        params['intrinsics'] = intrinsics.detach().cpu().numpy()
+        params['w2c'] = first_frame_w2c.detach().cpu().numpy()
+        params['org_width'] = dataset_config["desired_image_width"]
+        params['org_height'] = dataset_config["desired_image_height"]
+        params['gt_w2c_all_frames'] = []
+        for gt_w2c_tensor in gt_w2c_all_frames:
+            params['gt_w2c_all_frames'].append(gt_w2c_tensor.detach().cpu().numpy())
+        params['gt_w2c_all_frames'] = np.stack(params['gt_w2c_all_frames'], axis=0)
+        params['keyframe_time_indices'] = np.array(keyframe_time_indices)
 
-        self.params['semantic_ids'] = self.params['semantic_ids'].type(torch.uint8)
-        save_params(self.params, self.episode_dir, save_ply=False, file_prefix=output_file_prefix)
-
-    def full_pose_optimization(self):
-        # Step 1: Tracking (Pose refinement )
-        print("Running full pose optimization on all frames...")
-        for frame_idx in range(1, len(self.keyframe_list)):
-            ##########
-            print(f"Optimizing Pose for Frame {frame_idx} / {len(self.keyframe_list)-1}...")
-            iter_time_idx = self.keyframe_list[frame_idx]['id']
-            iter_color = self.keyframe_list[frame_idx]['color']
-            iter_depth = self.keyframe_list[frame_idx]['depth']
-            iter_confidence_map = self.keyframe_list[frame_idx]['confidence_map']
-            iter_gt_w2c = self.gt_w2c_all_frames[:iter_time_idx+1]
-            iter_data = {'cam': self.cam, 'im': iter_color, 'depth': iter_depth, 'confidence_map': iter_confidence_map, 'id': iter_time_idx, 
-                        'intrinsics': self.intrinsics, 'w2c': self.first_frame_w2c, 'iter_gt_w2c_list': iter_gt_w2c}
-            iter_data['semantic_id'] = self.keyframe_list[frame_idx]['semantic_id']
-            iter_data['semantic_color'] = self.keyframe_list[frame_idx]['semantic_color']
-
-
-
-            ##########
-            # Reset Optimizer & Learning Rates for tracking
-            optimizer = initialize_optimizer(self.params, self.params_opt_exclude, self.config['tracking']['lrs'], tracking=True)
-            # Keep Track of Best Candidate Rotation & Translation
-            candidate_cam_unnorm_rot = self.params['cam_unnorm_rots'][..., frame_idx].detach().clone()
-            candidate_cam_tran = self.params['cam_trans'][..., frame_idx].detach().clone()
-            current_min_loss = float(1e20)
-            # Tracking Optimization
-            iter = 0
-            num_iters_tracking = self.config['tracking']['num_iters']
-            while True:
-                # Loss for current frame
-                loss, self.variables, losses = get_loss(self.params, iter_data, self.variables, frame_idx, self.config['tracking']['loss_weights'],
-                                                self.config['tracking']['use_sil_for_loss'], self.config['tracking']['sil_thres'],
-                                                self.config['tracking']['use_l1'], self.config['tracking']['ignore_outlier_depth_loss'],
-                                                tracking=True, device=self.device, plot_dir=self.eval_dir,
-                                                visualize_tracking_loss=self.config['tracking']['visualize_tracking_loss'],
-                                                tracking_iteration=iter, load_semantics=True)
-                # Backprop
-                loss.backward()
-                # Optimizer Update
-                
-                optimizer.step() 
-                optimizer.zero_grad(set_to_none=True) 
-                
-                with torch.no_grad():
-                    # Save the best candidate rotation & translation
-                    if loss < current_min_loss:
-                        current_min_loss = loss
-                        candidate_cam_unnorm_rot = self.params['cam_unnorm_rots'][..., frame_idx].detach().clone()
-                        candidate_cam_tran = self.params['cam_trans'][..., frame_idx].detach().clone()
-                    
-                # Check if we should stop tracking
-                iter += 1
-                if iter == num_iters_tracking:
-                    break
-
-            
-            # Copy over the best candidate rotation & translation
-            with torch.no_grad():
-                self.params['cam_unnorm_rots'][..., frame_idx] = candidate_cam_unnorm_rot
-                self.params['cam_trans'][..., frame_idx] = candidate_cam_tran
+        params['semantic_ids'] = params['semantic_ids'].type(torch.uint8)
+        save_params(params, self.output_directory, save_ply=False, file_prefix=output_file_prefix)
         
-        
-    def full_map_optimization(self):
-        # Reset Optimizer & Learning Rates for Full Map Optimization
-        optimizer = initialize_optimizer(self.params, self.params_opt_exclude, self.config['mapping']['lrs'], tracking=False) 
-        # Mapping
-        print("Running full map optimization on all keyframes...")
-        for iter in range(self.num_iters_mapping):
-            print(f"Full Map Optimization Iteration {iter+1}/{self.num_iters_mapping}...")
-            # Randomly select a frame until current time step amongst keyframes
-            rand_idx = np.random.randint(0, len(self.keyframe_list))
-            # Use Keyframe Data
-            iter_time_idx = self.keyframe_list[rand_idx]['id']
-            iter_color = self.keyframe_list[rand_idx]['color']
-            iter_depth = self.keyframe_list[rand_idx]['depth']
-            iter_confidence_map = self.keyframe_list[rand_idx]['confidence_map']
-            iter_gt_w2c = self.gt_w2c_all_frames[:iter_time_idx+1]
-            iter_data = {'cam': self.cam, 'im': iter_color, 'depth': iter_depth, 'confidence_map': iter_confidence_map, 'id': iter_time_idx, 
-                        'intrinsics': self.intrinsics, 'w2c': self.first_frame_w2c, 'iter_gt_w2c_list': iter_gt_w2c}
-            # Add semantic id and colors
-            iter_data['semantic_id'] = self.keyframe_list[rand_idx]['semantic_id']
-            iter_data['semantic_color'] = self.keyframe_list[rand_idx]['semantic_color']
-            # Loss for current frame
-            visualization = False
-            loss, self.variables, losses = get_loss(self.params, iter_data, self.variables, iter_time_idx, self.config['mapping']['loss_weights'],
-                                            self.config['mapping']['use_sil_for_loss'], self.config['mapping']['sil_thres'],
-                                            self.config['mapping']['use_l1'], self.config['mapping']['ignore_outlier_depth_loss'],
-                                            mapping=True, device=self.device, plot_dir = self.eval_dir, load_semantics=True, visualization = visualization)
-            # Backprop
-            loss.backward()
-            with torch.no_grad():
-                # Prune Gaussians
-                if self.config['mapping']['prune_gaussians']:
-                    params, self.variables = prune_gaussians(self.params, self.params_opt_exclude, self.variables, optimizer, iter, self.config['mapping']['pruning_dict'])
-                    # if iter == self.num_iters_mapping - 1:
-                    #     params, self.variables = prune_outlier_semantics(self.params, self.params_opt_exclude, self.variables, optimizer)
-                # Gaussian-Splatting's Gradient-based Densification
-                if self.config['mapping']['use_gaussian_splatting_densification']:
-                    params, self.variables = densify(self.params, self.variables, optimizer, iter, self.config['mapping']['densify_dict'], self.params_opt_exclude, device=self.device)
-                # Optimizer Update
-
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
-                
-    def full_optimization_callback(self, req):
-        # human_input = input("Type 'p' for pose optimization, 'm' for map optimization, 'b' for both: ")
-        # try:
-        #     if human_input == 'p':
-        #         self.full_pose_optimization()
-        #     elif human_input == 'm':
-        #         self.full_map_optimization()
-        #     elif human_input == 'b':
-        #         self.full_pose_optimization()
-        #         self.full_map_optimization()
-        #     else:
-        #         print("Invalid input. Please try again.")
-        # except Exception as e:
-        #     print(f"An error occurred during optimization: {e}")
-        self.full_optimization_requested = True
-        time.sleep(2)
-        self.full_pose_optimization()
-        self.full_map_optimization()
-        self.full_optimization_requested = False
-        return EmptyResponse()
-    
-    def save_groundtruth_and_rendered_images(self):
-
-        images_dir = os.path.join(self.episode_dir, "images")
-        os.makedirs(images_dir, exist_ok=True)
-        for frame_idx in range(len(self.keyframe_list)):
-            curr_time_idx = self.keyframe_list[frame_idx]['id']
-            gt_color_torch = self.keyframe_list[frame_idx]['color']
-            gt_color_torch = gt_color_torch.permute(1,2,0).float()
-            gt_color_numpy  = (gt_color_torch.detach().cpu().numpy() * 255).astype(np.uint8)
-            
-            rendered_color_torch = render_cam(self.params, self.cam, curr_time_idx)
-            rendered_color_numpy  = (rendered_color_torch.detach().cpu().numpy() * 255).astype(np.uint8)
-            
-            c2w_torch = get_c2w_from_params(self.params, curr_time_idx)
-            c2w_numpy = c2w_torch.detach().cpu().numpy()
-            np.savetxt(os.path.join(images_dir, f"frame_{curr_time_idx}_pose.txt"), c2w_numpy)
-            # Save GT and Rendered Images
-            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_gt.png"), cv2.cvtColor(gt_color_numpy, cv2.COLOR_RGB2BGR))
-            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_rendered.png"), cv2.cvtColor(rendered_color_numpy, cv2.COLOR_RGB2BGR))
-            
 def main():
     parser = argparse.ArgumentParser()
 
@@ -1302,3 +1128,4 @@ if __name__ == '__main__':
         rospy.spin()
     except rospy.ROSInterruptException:
         pass
+

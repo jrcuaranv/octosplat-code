@@ -312,7 +312,14 @@ def transformed_params2depth_silhouette_rgbloss(params, w2c, transformed_pts, de
     }
     return rendervar
 
-
+def get_c2w_from_params(params, time_idx, device="cuda"):
+    cam_rot = F.normalize(params['cam_unnorm_rots'][..., time_idx].detach())
+    cam_tran = params['cam_trans'][..., time_idx].detach()
+    w2c = torch.eye(4).to(device).float()
+    w2c[:3, :3] = build_rotation(cam_rot)
+    w2c[:3, 3] = cam_tran
+    c2w = torch.linalg.inv(w2c)
+    return c2w  
 
 def transform_to_frame(params, time_idx, gaussians_grad, camera_grad, params_v = None, device="cuda"):
     """
