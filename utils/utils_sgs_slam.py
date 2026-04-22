@@ -84,7 +84,7 @@ def get_pointcloud(color, depth, confidence_map, intrinsics, w2c, transform_pts=
     others_mask = ~sem_mask
 
     
-    downsample_mask(others_mask, down_factor=0.9) # donwsampling irrelevant semantics (remove down_factor%)
+    downsample_mask(others_mask, down_factor=0.7) # donwsampling irrelevant semantics (remove down_factor%)
     # downsample_mask(sem_mask, down_factor=0.3)
     
     
@@ -324,17 +324,18 @@ def initialize_first_timestep(dataset_0, num_frames, scene_radius_depth_ratio, m
     else:
         return params, variables, intrinsics, w2c, cam, params_opt_exclude
 
-def render_any_cam(params, w2c, device='cuda'):
-    H = 480
-    W = 1000
+def render_any_cam(params, w2c, height = 480, width = 640,device='cuda', intrinsics = None):
+    H = height
+    W = width
     cx = W / 2
     cy = H / 2
     fov = 120*np.pi / 180
     fx = W / (2 * np.tan(fov / 2))
     fy = H / (2 * np.tan(fov / 2))
-    intrinsics = np.array([[fx, 0, cx],
-                            [0, fy, cy],
-                            [0, 0, 1]])
+    if intrinsics is None:
+        intrinsics = np.array([[fx, 0, cx],
+                                [0, fy, cy],
+                                [0, 0, 1]])
     
     cam = setup_camera(W, H, intrinsics, np.eye(4), device=device)
     
@@ -366,13 +367,26 @@ def render_cam(params, cam, iter_time_idx, device='cuda'):
                                          camera_grad=False, device=device)
 
     rendervar = transformed_params2rendervar(params, transformed_pts, device=device)
+    depth_sil_rendervar = transformed_params2depthplussilhouette(params, None,transformed_pts, device=device)
+    semantic_rendervar = transformed_semantics2rendervar(params, transformed_pts, device=device)
+        
+        
     rgb, _, _, = Renderer(raster_settings=cam)(**rendervar)
+    depth_sil, _, _, = Renderer(raster_settings=cam)(**depth_sil_rendervar)
+    semantics, _, _, = Renderer(raster_settings=cam)(**semantic_rendervar)
+
+    depth = depth_sil[0, :, :].squeeze().detach().cpu()
+    silhouette = depth_sil[1, :, :].squeeze().detach().cpu()
 
     rgb = rgb.permute(1, 2, 0).detach().cpu()
+    semantics = semantics.permute(1, 2, 0).detach().cpu()
+
     rgb_torch = torch.clip(rgb, 0, 1)
+    semantics_torch = torch.clip(semantics, 0, 1)
+    silhouette_torch = torch.clip(silhouette, 0, 1)
+
+    return rgb_torch, depth, semantics_torch, silhouette_torch
     
-    
-    return rgb_torch
 
 def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_for_loss, sil_thres,
              use_l1, ignore_outlier_depth_loss, tracking=False, mapping=False, do_ba=False, device="cuda",
@@ -412,7 +426,7 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
     if mapping:
         point_in_image_mask = filter_points_in_image(transformed_pts, curr_data['intrinsics'], H = curr_data['im'].shape[1], W = curr_data['im'].shape[2])
         params['opt_count'][point_in_image_mask] += 1
-        
+
     # RGB Rendering
     # current_datetime = datetime.now()
     # time_prefix = current_datetime.strftime("%Y-%m-%d-%H-%M-%S")
@@ -468,6 +482,11 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
     # Mask with presence silhouette mask (accounts for empty space)
     if tracking and use_sil_for_loss:
         mask = mask & presence_sil_mask
+    else: # if mapping
+        # trying to solve the problem of floating gaussians during mapping
+        # this consideres all depth values
+        # At this point, nan values are also zero.
+        mask = (curr_data['depth'] >= 0) # this seems to work # jrcv, added TODO: further experiments might be necessary
 
     # Depth loss
     if use_l1:

@@ -1188,13 +1188,13 @@ class ActiveSLAM:
                 self.params['cam_trans'][..., frame_idx] = candidate_cam_tran
         
         
-    def full_map_optimization(self):
+    def full_map_optimization(self, number_steps):
         # Reset Optimizer & Learning Rates for Full Map Optimization
         optimizer = initialize_optimizer(self.params, self.params_opt_exclude, self.config['mapping']['lrs'], tracking=False) 
         # Mapping
         print("Running full map optimization on all keyframes...")
-        for iter in range(self.num_iters_mapping):
-            print(f"Full Map Optimization Iteration {iter+1}/{self.num_iters_mapping}...")
+        for iter in range(number_steps):
+            print(f"Full Map Optimization Iteration {iter+1}/{number_steps}...")
             # Randomly select a frame until current time step amongst keyframes
             rand_idx = np.random.randint(0, len(self.keyframe_list))
             # Use Keyframe Data
@@ -1219,12 +1219,12 @@ class ActiveSLAM:
             with torch.no_grad():
                 # Prune Gaussians
                 if self.config['mapping']['prune_gaussians']:
-                    params, self.variables = prune_gaussians(self.params, self.params_opt_exclude, self.variables, optimizer, iter, self.config['mapping']['pruning_dict'])
+                    self.params, self.variables = prune_gaussians(self.params, self.params_opt_exclude, self.variables, optimizer, iter, self.config['mapping']['pruning_dict'])
                     # if iter == self.num_iters_mapping - 1:
-                    #     params, self.variables = prune_outlier_semantics(self.params, self.params_opt_exclude, self.variables, optimizer)
+                    #     self.params, self.variables = prune_outlier_semantics(self.params, self.params_opt_exclude, self.variables, optimizer)
                 # Gaussian-Splatting's Gradient-based Densification
                 if self.config['mapping']['use_gaussian_splatting_densification']:
-                    params, self.variables = densify(self.params, self.variables, optimizer, iter, self.config['mapping']['densify_dict'], self.params_opt_exclude, device=self.device)
+                    self.params, self.variables = densify(self.params, self.variables, optimizer, iter, self.config['mapping']['densify_dict'], self.params_opt_exclude, device=self.device)
                 # Optimizer Update
 
                 optimizer.step()
@@ -1247,7 +1247,7 @@ class ActiveSLAM:
         self.full_optimization_requested = True
         time.sleep(2)
         self.full_pose_optimization()
-        self.full_map_optimization()
+        self.full_map_optimization(number_steps=200)
         self.full_optimization_requested = False
         return EmptyResponse()
     
@@ -1260,17 +1260,50 @@ class ActiveSLAM:
             gt_color_torch = self.keyframe_list[frame_idx]['color']
             gt_color_torch = gt_color_torch.permute(1,2,0).float()
             gt_color_numpy  = (gt_color_torch.detach().cpu().numpy() * 255).astype(np.uint8)
+
+            gt_semantics_torch = self.keyframe_list[frame_idx]['semantic_color']
+            gt_semantics_torch = gt_semantics_torch.permute(1,2,0).float()
+            gt_semantics_numpy  = (gt_semantics_torch.detach().cpu().numpy() * 255).astype(np.uint8)
+
+            gt_depth_torch = self.keyframe_list[frame_idx]['depth'].squeeze().float()
+            gt_depth_numpy = gt_depth_torch.detach().cpu().numpy()
             
-            rendered_color_torch = render_cam(self.params, self.cam, curr_time_idx)
+            rendered_color_torch, rendered_depth_torch, rendered_semantics_torch, rendered_silhouette_torch = render_cam(self.params, self.cam, curr_time_idx)
             rendered_color_numpy  = (rendered_color_torch.detach().cpu().numpy() * 255).astype(np.uint8)
-            
+            rendered_depth_numpy = rendered_depth_torch.detach().cpu().numpy()
+            rendered_semantics_numpy = (rendered_semantics_torch.detach().cpu().numpy() * 255).astype(np.uint8)
+            rendered_silhouette_numpy = rendered_silhouette_torch.detach().cpu().numpy()
+
+            valid_mask = rendered_silhouette_numpy > 0.9
+            rendered_color_numpy[~valid_mask] = 0
+            rendered_depth_numpy[~valid_mask] = 0
+            rendered_semantics_numpy[~valid_mask] = 0
+
             c2w_torch = get_c2w_from_params(self.params, curr_time_idx)
             c2w_numpy = c2w_torch.detach().cpu().numpy()
             np.savetxt(os.path.join(images_dir, f"frame_{curr_time_idx}_pose.txt"), c2w_numpy)
+
+            # converting depth maps to colorable depth maps for visualization
+            depth_min = 0
+            depth_max = 2
+            depth_range = depth_max - depth_min
+            gt_depth_vis = (gt_depth_numpy - depth_min) / depth_range * 255
+            gt_depth_vis = gt_depth_vis.astype(np.uint8)
+            gt_depth_vis_color = cv2.applyColorMap(gt_depth_vis, cv2.COLORMAP_JET)
+            rendered_depth_vis = (rendered_depth_numpy - depth_min) / depth_range * 255
+            rendered_depth_vis = rendered_depth_vis.astype(np.uint8)
+            rendered_depth_vis_color = cv2.applyColorMap(rendered_depth_vis, cv2.COLORMAP_JET)
+
+            rendered_silhouette_vis = (rendered_silhouette_numpy * 255).astype(np.uint8)
+            rendered_silhouette_vis_color = cv2.applyColorMap(rendered_silhouette_vis, cv2.COLORMAP_JET)
             # Save GT and Rendered Images
-            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_gt.png"), cv2.cvtColor(gt_color_numpy, cv2.COLOR_RGB2BGR))
-            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_rendered.png"), cv2.cvtColor(rendered_color_numpy, cv2.COLOR_RGB2BGR))
-            
+            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_color_gt.png"), cv2.cvtColor(gt_color_numpy, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_depth_gt.png"), gt_depth_vis_color)
+            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_semantics_gt.png"), cv2.cvtColor(gt_semantics_numpy, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_color_rendered.png"), cv2.cvtColor(rendered_color_numpy, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_depth_rendered.png"), rendered_depth_vis_color)
+            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_semantics_rendered.png"), cv2.cvtColor(rendered_semantics_numpy, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_silhouette_rendered.png"), rendered_silhouette_vis_color)
 def main():
     parser = argparse.ArgumentParser()
 
