@@ -87,7 +87,7 @@ from utils.slam_helpers import (
     get_c2w_from_params,transformed_params2rendervar, filter_points_in_image, transformed_params2depth_silhouette_rgbloss, transformed_entropy2rendervar, transformed_params2depthplussilhouette,
     transformed_semantics2rendervar, transformed_rgb_loss_rendervar, transform_to_frame, transform_points_to_frame, l1_loss_v1, matrix_to_quaternion
 )
-from utils.slam_external import calc_ssim, build_rotation, prune_outlier_semantics, prune_gaussians, densify, prune_aux_gaussians
+from utils.slam_external import calc_ssim, build_rotation, densify_v2, prune_outlier_semantics, prune_gaussians, densify, prune_aux_gaussians
 
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 
@@ -453,7 +453,7 @@ class ActiveSLAM:
         depth = np.expand_dims(depth, -1) #(h,w,1)
         depth = torch.from_numpy(depth)
         depth = torch.nan_to_num(depth, nan=0.0)
-        depth[depth>1.0] = 0.0
+        depth[depth>2.5] = 0.0
 
         #confidence map to from np.uint8 to np.float32
         
@@ -803,7 +803,7 @@ class ActiveSLAM:
                     loss.backward()
                     # Optimizer Update
                     
-                    # optimizer.step() # TODO uncomment this, jrcv
+                    optimizer.step() # TODO uncomment this, jrcv
                     optimizer.zero_grad(set_to_none=True) 
                     
                     with torch.no_grad():
@@ -1217,18 +1217,15 @@ class ActiveSLAM:
             # Backprop
             loss.backward()
             with torch.no_grad():
+                self.params, self.variables = densify_v2(self.params, self.variables, optimizer, iter, self.config['mapping']['densify_dict'], self.params_opt_exclude, device=self.device)
+                # Optimizer Update
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                
                 # Prune Gaussians
                 if self.config['mapping']['prune_gaussians']:
                     self.params, self.variables = prune_gaussians(self.params, self.params_opt_exclude, self.variables, optimizer, iter, self.config['mapping']['pruning_dict'])
-                    # if iter == self.num_iters_mapping - 1:
-                    #     self.params, self.variables = prune_outlier_semantics(self.params, self.params_opt_exclude, self.variables, optimizer)
-                # Gaussian-Splatting's Gradient-based Densification
-                if self.config['mapping']['use_gaussian_splatting_densification']:
-                    self.params, self.variables = densify(self.params, self.variables, optimizer, iter, self.config['mapping']['densify_dict'], self.params_opt_exclude, device=self.device)
-                # Optimizer Update
-
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
+                    
                 
     def full_optimization_callback(self, req):
         # human_input = input("Type 'p' for pose optimization, 'm' for map optimization, 'b' for both: ")
@@ -1246,8 +1243,9 @@ class ActiveSLAM:
         #     print(f"An error occurred during optimization: {e}")
         self.full_optimization_requested = True
         time.sleep(2)
+        self.full_map_optimization(number_steps=100)
         self.full_pose_optimization()
-        self.full_map_optimization(number_steps=200)
+        self.full_map_optimization(number_steps=100)
         self.full_optimization_requested = False
         return EmptyResponse()
     

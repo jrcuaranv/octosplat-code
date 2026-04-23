@@ -60,7 +60,7 @@ config = dict(
     ),
     tracking=dict(
         visualize_tracking_loss = True,
-        use_gt_poses=True, # Use GT Poses for Tracking, saving tracking time
+        use_gt_poses=False, #True, # Use GT Poses for Tracking, saving tracking time
         forward_prop=True, # Forward Propagate Poses
         num_iters=tracking_iters,
         use_sil_for_loss=True,
@@ -133,10 +133,10 @@ config = dict(
         ),
         use_gaussian_splatting_densification=False, # Use Gaussian Splatting-based Densification during Mapping
         densify_dict=dict( # Needs to be updated based on the number of mapping iterations
-            start_after=500,
+            start_after=50, #500,
             remove_big_after=3000,
             stop_after=5000,
-            densify_every=100,
+            densify_every= 50,#100,
             grad_thresh=0.0002,
             num_to_split_into=2,
             removal_opacity_threshold=0.005,

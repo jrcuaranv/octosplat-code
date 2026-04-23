@@ -482,11 +482,11 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
     # Mask with presence silhouette mask (accounts for empty space)
     if tracking and use_sil_for_loss:
         mask = mask & presence_sil_mask
-    else: # if mapping
-        # trying to solve the problem of floating gaussians during mapping
-        # this consideres all depth values
-        # At this point, nan values are also zero.
-        mask = (curr_data['depth'] >= 0) # this seems to work # jrcv, added TODO: further experiments might be necessary
+    # else: # if mapping
+    #     # trying to solve the problem of floating gaussians during mapping
+    #     # this consideres all depth values
+    #     # At this point, nan values are also zero.
+    #     mask = (curr_data['depth'] >= 0) # this seems to work # jrcv, added TODO: further experiments might be necessary
 
     # Depth loss
     if use_l1:
@@ -789,7 +789,7 @@ def add_new_gaussians(params, params_opt_exclude, variables, curr_data, sil_thre
         variables['max_2D_radius'] = torch.zeros(num_pts, device=device).float()
         new_timestep = time_idx*torch.ones(new_pt_cld.shape[0],device=device).float()
         variables['timestep'] = torch.cat((variables['timestep'],new_timestep),dim=0)
-
+        
     return params, variables
 
 
