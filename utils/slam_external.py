@@ -21,6 +21,7 @@ import torch.nn.functional as func
 from torch.autograd import Variable
 from math import exp
 import math
+import open3d as o3d
 
 
 def build_rotation(q, device="cuda"):
@@ -259,7 +260,20 @@ def prune_outlier_semantics(params, params_opt_exclude, variables, optimizer, de
     torch.cuda.empty_cache()
     return params, variables
 
+def prune_outliers(params, params_opt_exclude, variables, optimizer, device = "cuda"):
+    means3D = params['means3D'].detach().cpu().numpy()
 
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(means3D)
+    pcd, inliers_idx = pcd.remove_radius_outlier(nb_points=5, radius=0.01)
+    
+    to_keep = np.zeros(len(means3D), dtype=bool)
+    to_keep[inliers_idx] = True
+    to_remove = ~to_keep
+    params, variables = remove_points(to_remove, params, params_opt_exclude, variables, optimizer)
+    
+    torch.cuda.empty_cache()
+    return params, variables
 
 def densify(params, variables, optimizer, iter, densify_dict, params_opt_exclude, device="cuda"):
     if iter <= densify_dict['stop_after']:

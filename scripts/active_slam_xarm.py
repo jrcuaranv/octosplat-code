@@ -87,7 +87,7 @@ from utils.slam_helpers import (
     get_c2w_from_params,transformed_params2rendervar, filter_points_in_image, transformed_params2depth_silhouette_rgbloss, transformed_entropy2rendervar, transformed_params2depthplussilhouette,
     transformed_semantics2rendervar, transformed_rgb_loss_rendervar, transform_to_frame, transform_points_to_frame, l1_loss_v1, matrix_to_quaternion
 )
-from utils.slam_external import calc_ssim, build_rotation, densify_v2, prune_outlier_semantics, prune_gaussians, densify, prune_aux_gaussians
+from utils.slam_external import calc_ssim, build_rotation, densify_v2, prune_outlier_semantics, prune_gaussians, densify, prune_aux_gaussians, prune_outliers
 
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 
@@ -1228,7 +1228,7 @@ class ActiveSLAM:
                 # Prune Gaussians
                 if self.config['mapping']['prune_gaussians']:
                     self.params, self.variables = prune_gaussians(self.params, self.params_opt_exclude, self.variables, optimizer, iter, self.config['mapping']['pruning_dict'])
-                    
+            # prune_outliers(self.params, self.params_opt_exclude, self.variables, optimizer) # based on density  
                 
     def full_optimization_callback(self, req):
         # human_input = input("Type 'p' for pose optimization, 'm' for map optimization, 'b' for both: ")

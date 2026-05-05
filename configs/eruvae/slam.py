@@ -124,7 +124,7 @@ config = dict(
         pruning_dict=dict( # Needs to be updated based on the number of mapping iterations
             start_after=0,
             remove_big_after=0,
-            stop_after=20,
+            stop_after=20000, #20,
             prune_every=20,
             removal_opacity_threshold=0.005,
             final_removal_opacity_threshold=0.005,
@@ -141,6 +141,7 @@ config = dict(
             num_to_split_into=2,
             removal_opacity_threshold=0.005,
             final_removal_opacity_threshold=0.005,
+            reset_opacities=True,
             reset_opacities_every=3000, # Doesn't consider iter 0
         ),
     ),
