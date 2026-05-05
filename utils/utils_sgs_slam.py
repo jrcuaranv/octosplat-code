@@ -354,12 +354,13 @@ def render_any_cam(params, w2c, height = 480, width = 640,device='cuda', intrins
     rgb = rgb.permute(1, 2, 0).detach().cpu()
     rgb = torch.clip(rgb, 0, 1)
     rgb[rgb==0] = 1.0 # set background white
-    plt.figure(1)
+    # plt.figure(1)
 
-    plt.imshow(rgb)
-    plt.title("Rendered RGB")
-    print("render any cam disabled")
-    plt.show()
+    # plt.imshow(rgb)
+    # plt.title("Rendered RGB")
+    # print("render any cam disabled")
+    # plt.show()
+    return rgb
 
 def render_cam(params, cam, iter_time_idx, device='cuda'):
     # Transform Centers and Unnorm Rots of Gaussians to Camera Frame

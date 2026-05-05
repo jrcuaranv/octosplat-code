@@ -1053,6 +1053,9 @@ class ActiveSLAM:
                         save_params_ckpt(self.params, ckpt_output_dir, time_idx)
                         print('Failed to evaluate trajectory.')
             
+            if time_idx > 0:
+                self.save_side_view_img(time_idx)
+
             # Add frame to keyframe list
             if ((time_idx == 0) or ((time_idx+1) % config['keyframe_every'] == 0) or \
                         (time_idx == num_frames-2)) and (not torch.isinf(curr_gt_w2c[-1]).any()) and (not torch.isnan(curr_gt_w2c[-1]).any()):
@@ -1253,6 +1256,7 @@ class ActiveSLAM:
 
         images_dir = os.path.join(self.episode_dir, "images")
         os.makedirs(images_dir, exist_ok=True)
+        self.save_side_view_img(1000) # save a side view image at the end of the episode for visualization
         for frame_idx in range(len(self.keyframe_list)):
             curr_time_idx = self.keyframe_list[frame_idx]['id']
             gt_color_torch = self.keyframe_list[frame_idx]['color']
@@ -1294,6 +1298,8 @@ class ActiveSLAM:
 
             rendered_silhouette_vis = (rendered_silhouette_numpy * 255).astype(np.uint8)
             rendered_silhouette_vis_color = cv2.applyColorMap(rendered_silhouette_vis, cv2.COLORMAP_JET)
+
+            
             # Save GT and Rendered Images
             cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_color_gt.png"), cv2.cvtColor(gt_color_numpy, cv2.COLOR_RGB2BGR))
             cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_depth_gt.png"), gt_depth_vis_color)
@@ -1302,6 +1308,31 @@ class ActiveSLAM:
             cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_depth_rendered.png"), rendered_depth_vis_color)
             cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_semantics_rendered.png"), cv2.cvtColor(rendered_semantics_numpy, cv2.COLOR_RGB2BGR))
             cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_silhouette_rendered.png"), rendered_silhouette_vis_color)
+   
+    def save_side_view_img(self, curr_time_idx):
+        images_dir = os.path.join(self.episode_dir, "side_images")
+        os.makedirs(images_dir, exist_ok=True)
+        # Rendering right side view
+        R_base_cam = np.array([[-1.0, 0.0, 0.0],
+                        [0.0, 0.0, -1.0],
+                        [0.0, -1.0, 0.0]])
+        
+        pose_w_base = self.get_transform('world', 'link_base')
+        T_w_base = ros_pose_to_SE3(pose_w_base)
+        R_w_base = T_w_base[:3, :3]
+        R_w_cam = np.matmul(R_w_base, R_base_cam)
+        x_base = T_w_base[0, 3]
+        y_base = T_w_base[1, 3]
+        z_base = T_w_base[2, 3]
+        t = np.array([[x_base],
+                        [y_base],
+                        [z_base + 0.2]]) # position of camera wrt to world frame
+        t = t.reshape(3, 1)
+        T_wc = np.block([[R_w_cam, t],[0.0, 0.0, 0.0, 1.0]])
+        T_cw = np.linalg.inv(T_wc)
+        side_view_torch = render_any_cam(self.params, T_cw, height = 480, width = 1280)
+        side_view_numpy = (side_view_torch.detach().cpu().numpy() * 255).astype(np.uint8)
+        cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_side_view_rendered.png"), cv2.cvtColor(side_view_numpy, cv2.COLOR_RGB2BGR))
 def main():
     parser = argparse.ArgumentParser()
 
