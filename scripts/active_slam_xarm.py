@@ -130,7 +130,7 @@ class ActiveSLAM:
         else:
             prefix = 'gazebo_robot'
         
-        self.output_directory = self.config['active_mapping']['output_dir']
+        self.output_directory = self.config['active_mapping'][prefix]['output_dir']
         # rgb_topic = config['active_mapping'][prefix]['rgb_topic']
         # depth_topic = config['active_mapping'][prefix]['depth_topic']
         rgb_topic = '/camera2/color/rgb'

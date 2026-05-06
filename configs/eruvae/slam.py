@@ -160,8 +160,8 @@ config = dict(
     ),
     active_mapping=dict(
         using_real_robot=True,
-        output_dir= '/home/companion/Documents/results_mapping/',
         real_robot=dict(
+            output_dir= '/home/companion/Documents/results_mapping/',
             rgb_topic = '/camera/color/image_raw/compressed',
             depth_topic = '/camera/depth/image_rect_raw',
             crop_size = None,
@@ -175,6 +175,7 @@ config = dict(
                                 [ 0.,          0.,          0.,          1.        ]]
         ),
         gazebo_robot=dict(
+            output_dir= '/media/jose/SSD1G/results_mapping/',
             rgb_topic = '/realsense_gazebo_camera/color/image_raw/compressed',
             depth_topic = '/realsense_gazebo_camera/aligned_depth_to_color/image_raw',
             crop_size = None,
