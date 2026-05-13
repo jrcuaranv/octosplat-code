@@ -144,11 +144,10 @@ def update_params_and_optimizer(new_params, params, params_opt_exclude, optimize
 def cat_params_to_optimizer(new_params, params, params_opt_exclude, optimizer):
     for k, v in new_params.items():
         if k in params_opt_exclude:
-            # print(f"Key: {k}")
-            # print(f"params[{k}].shape: {params[k].shape}")
-            # print(f"v.shape: {v.shape}")
-            # print(f"params[{k}].dim(): {params[k].dim()}, v.dim(): {v.dim()}")
-            
+            print(f"Key: {k}")
+            print(f"params[{k}].shape: {params[k].shape}")
+            print(f"v.shape: {v.shape}")
+            print(f"params[{k}].dim(): {params[k].dim()}, v.dim(): {v.dim()}")
             params[k] = torch.cat((params[k], v), dim=0)
             continue
         group = [g for g in optimizer.param_groups if g['name'] == k][0]
@@ -330,72 +329,74 @@ def densify(params, variables, optimizer, iter, densify_dict, params_opt_exclude
     return params, variables
 
 def densify_v2(params, variables, optimizer, iter, densify_dict, params_opt_exclude, device="cuda"):
-    variables = accumulate_mean2d_gradient(variables)
-    grad_thresh = densify_dict['grad_thresh']
-    if (iter >= densify_dict['start_after']) and (iter % densify_dict['densify_every'] == 0):
-        grads = variables['means2D_gradient_accum'] / variables['denom']
-        grads[grads.isnan()] = 0.0
-        
-        to_clone = torch.logical_and(grads >= grad_thresh, (
-                    torch.max(torch.exp(params['log_scales']), dim=1).values <= 0.01 * variables['scene_radius']))
-        
-        if to_clone.sum() > 0:
+    if iter <= densify_dict['stop_after']:
+        variables = accumulate_mean2d_gradient(variables)
+        grad_thresh = densify_dict['grad_thresh']
+        if (iter >= densify_dict['start_after']) and (iter % densify_dict['densify_every'] == 0):
+            grads = variables['means2D_gradient_accum'] / variables['denom']
+            grads[grads.isnan()] = 0.0
             
-            new_params = {k: v[to_clone] for k, v in params.items() if k not in ['cam_unnorm_rots', 'cam_trans']}
-            params = cat_params_to_optimizer(new_params, params, params_opt_exclude, optimizer)
-        
-        num_pts = params['means3D'].shape[0]
+            to_clone = torch.logical_and(grads >= grad_thresh, (
+                        torch.max(torch.exp(params['log_scales']), dim=1).values <= 0.01 * variables['scene_radius']))
+            
+            if to_clone.sum() > 0:
+                
+                new_params = {k: v[to_clone] for k, v in params.items() if k not in ['cam_unnorm_rots', 'cam_trans']}
+                params = cat_params_to_optimizer(new_params, params, params_opt_exclude, optimizer)
+            
+            num_pts = params['means3D'].shape[0]
 
-        padded_grad = torch.zeros(num_pts, device=device)
-        padded_grad[:grads.shape[0]] = grads
-        to_split = torch.logical_and(padded_grad >= grad_thresh,
-                                        torch.max(torch.exp(params['log_scales']), dim=1).values > 0.01 * variables[
-                                            'scene_radius'])
-        # print(f"Iteration {iter}: Number of points to split: {to_split.sum().item()}")
-        if to_split.sum() > 0:
-            n = densify_dict['num_to_split_into']  # number to split into
-            new_params = {k: v[to_split].repeat(n, 1) for k, v in params.items() if k not in ['cam_unnorm_rots', 'cam_trans']}
-            stds = torch.exp(params['log_scales'])[to_split].repeat(n, 3)
-            means = torch.zeros((stds.size(0), 3), device=device)
-            samples = torch.normal(mean=means, std=stds)
-            rots = build_rotation(params['unnorm_rotations'][to_split], device=device).repeat(n, 1, 1)
-            new_params['means3D'] += torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1)
-            new_params['log_scales'] = torch.log(torch.exp(new_params['log_scales']) / (0.8 * n))
-            params = cat_params_to_optimizer(new_params, params, params_opt_exclude, optimizer)
-        
-        num_pts = params['means3D'].shape[0]
+            padded_grad = torch.zeros(num_pts, device=device)
+            padded_grad[:grads.shape[0]] = grads
+            to_split = torch.logical_and(padded_grad >= grad_thresh,
+                                            torch.max(torch.exp(params['log_scales']), dim=1).values > 0.01 * variables[
+                                                'scene_radius'])
+            print(f"Iteration {iter}: Number of points to split: {to_split.sum().item()}")
+            to_split = 0*to_split # fixing a bug. TODO: fix logic and remove
+            if to_split.sum() > 0:
+                n = densify_dict['num_to_split_into']  # number to split into
+                new_params = {k: v[to_split].repeat(n, 1) for k, v in params.items() if k not in ['cam_unnorm_rots', 'cam_trans']}
+                stds = torch.exp(params['log_scales'])[to_split].repeat(n, 3)
+                means = torch.zeros((stds.size(0), 3), device=device)
+                samples = torch.normal(mean=means, std=stds)
+                rots = build_rotation(params['unnorm_rotations'][to_split], device=device).repeat(n, 1, 1)
+                new_params['means3D'] += torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1)
+                new_params['log_scales'] = torch.log(torch.exp(new_params['log_scales']) / (0.8 * n))
+                params = cat_params_to_optimizer(new_params, params, params_opt_exclude, optimizer)
+            
+            num_pts = params['means3D'].shape[0]
 
-        variables['means2D_gradient_accum'] = torch.zeros(num_pts, device=device)
-        variables['denom'] = torch.zeros(num_pts, device=device)
-        variables['max_2D_radius'] = torch.zeros(num_pts, device=device)
-        variables['timestep'] = torch.zeros(num_pts, device=device) #jrcv added
-        variables['seen'] = torch.zeros(num_pts, dtype=torch.bool, device=device) # jrcv added
-        # variables['means2D'] = torch.zeros(num_pts, device=device) #jrcv added. Its wrong.
+            variables['means2D_gradient_accum'] = torch.zeros(num_pts, device=device)
+            variables['denom'] = torch.zeros(num_pts, device=device)
+            variables['max_2D_radius'] = torch.zeros(num_pts, device=device)
+            variables['timestep'] = torch.zeros(num_pts, device=device) #jrcv added
+            variables['seen'] = torch.zeros(num_pts, dtype=torch.bool, device=device) # jrcv added
+            # variables['means2D'] = torch.zeros(num_pts, device=device) #jrcv added. Its wrong.
 
-        if to_split.sum() > 0:
-            to_remove = torch.cat((to_split, torch.zeros(n * to_split.sum(), dtype=torch.bool, device=device)))
+            if to_split.sum() > 0:
+                to_remove = torch.cat((to_split, torch.zeros(n * to_split.sum(), dtype=torch.bool, device=device)))
+                params, variables = remove_points(to_remove, params, params_opt_exclude, variables, optimizer)
+
+            if iter == densify_dict['stop_after']:
+                remove_threshold = densify_dict['final_removal_opacity_threshold']
+            else:
+                remove_threshold = densify_dict['removal_opacity_threshold']
+            to_remove = (torch.sigmoid(params['logit_opacities']) < remove_threshold).squeeze()
+            if iter >= densify_dict['remove_big_after']:
+                big_points_ws = torch.exp(params['log_scales']).max(dim=1).values > 0.1 * variables['scene_radius']
+                to_remove = torch.logical_or(to_remove, big_points_ws)
             params, variables = remove_points(to_remove, params, params_opt_exclude, variables, optimizer)
 
-        if iter == densify_dict['stop_after']:
-            remove_threshold = densify_dict['final_removal_opacity_threshold']
-        else:
-            remove_threshold = densify_dict['removal_opacity_threshold']
-        to_remove = (torch.sigmoid(params['logit_opacities']) < remove_threshold).squeeze()
-        if iter >= densify_dict['remove_big_after']:
-            big_points_ws = torch.exp(params['log_scales']).max(dim=1).values > 0.1 * variables['scene_radius']
-            to_remove = torch.logical_or(to_remove, big_points_ws)
-        params, variables = remove_points(to_remove, params, params_opt_exclude, variables, optimizer)
+            torch.cuda.empty_cache()
 
-        torch.cuda.empty_cache()
+        # Reset Opacities for all Gaussians (This is not desired for mapping on only current frame)
+        if iter > 0 and iter % densify_dict['reset_opacities_every'] == 0 and densify_dict['reset_opacities']:
+            new_params = {'logit_opacities': inverse_sigmoid(torch.ones_like(params['logit_opacities']) * 0.01)}
+            params = update_params_and_optimizer(new_params, params, params_opt_exclude, optimizer)
 
-    # Reset Opacities for all Gaussians (This is not desired for mapping on only current frame)
-    if iter > 0 and iter % densify_dict['reset_opacities_every'] == 0 and densify_dict['reset_opacities']:
-        new_params = {'logit_opacities': inverse_sigmoid(torch.ones_like(params['logit_opacities']) * 0.01)}
-        params = update_params_and_optimizer(new_params, params, params_opt_exclude, optimizer)
-
-    # print("Variables['max_2D_radius'].shape after removal:", variables['max_2D_radius'].shape)
-    # print("Params['means3D'].shape after removal:", params['means3D'].shape)
-    
+        # print("Variables['max_2D_radius'].shape after removal:", variables['max_2D_radius'].shape)
+        # print("Params['means3D'].shape after removal:", params['means3D'].shape)
+        
     return params, variables
 
 

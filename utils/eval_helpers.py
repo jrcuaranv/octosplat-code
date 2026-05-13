@@ -1100,3 +1100,39 @@ def eval_nvs(dataset, final_params, num_frames, eval_dir, sil_thres, mapping_ite
     if wandb_run is not None:
         wandb_run.log({"Eval/Metrics": fig})
     plt.close()
+
+def eval_single_frame(gt_rgb, gt_depth, gt_seg, rendered_rgb, rendered_depth, rendered_seg, device="cuda"):
+    
+    valid_depth_mask = (gt_depth > 0)
+    rendered_depth = rendered_depth * valid_depth_mask
+    
+    # Render RGB and Calculate PSNR, SSIM, LPIPS
+    
+    weighted_rend_im = rendered_rgb * valid_depth_mask
+    weighted_gt_im = gt_rgb * valid_depth_mask
+    psnr = calc_psnr(weighted_rend_im, weighted_gt_im).mean()
+    ssim = ms_ssim(weighted_rend_im.unsqueeze(0).cpu(), weighted_gt_im.unsqueeze(0).cpu(),
+                    data_range=1.0, size_average=True)
+    loss_fn_alex.to(device)
+    lpips_score = loss_fn_alex(torch.clamp(weighted_rend_im.unsqueeze(0), 0.0, 1.0),
+                                torch.clamp(weighted_gt_im.unsqueeze(0), 0.0, 1.0)).item()
+
+    # Compute Depth Metrics: RMSE and L1
+    
+    diff_depth_rmse = torch.sqrt((((rendered_depth - gt_depth)) ** 2))
+    diff_depth_rmse = diff_depth_rmse * valid_depth_mask
+    rmse = diff_depth_rmse.sum() / valid_depth_mask.sum()
+    diff_depth_l1 = torch.abs((rendered_depth - gt_depth))
+    diff_depth_l1 = diff_depth_l1 * valid_depth_mask
+    depth_l1 = diff_depth_l1.sum() / valid_depth_mask.sum()
+    
+    # Compute metrics for semantics
+    rendered_seg = recolor_semantic_img(rendered_seg, gt_seg)
+    miou = evaluate_miou(rendered_seg, gt_seg)
+    
+
+    return psnr.detach().cpu().numpy(), ssim.detach().cpu().numpy(), lpips_score, rmse.detach().cpu().numpy(), depth_l1.detach().cpu().numpy(), miou
+
+        
+    
+    

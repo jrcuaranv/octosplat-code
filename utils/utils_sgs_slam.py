@@ -376,17 +376,14 @@ def render_cam(params, cam, iter_time_idx, device='cuda'):
     depth_sil, _, _, = Renderer(raster_settings=cam)(**depth_sil_rendervar)
     semantics, _, _, = Renderer(raster_settings=cam)(**semantic_rendervar)
 
-    depth = depth_sil[0, :, :].squeeze().detach().cpu()
-    silhouette = depth_sil[1, :, :].squeeze().detach().cpu()
-
-    rgb = rgb.permute(1, 2, 0).detach().cpu()
-    semantics = semantics.permute(1, 2, 0).detach().cpu()
+    depth_torch = depth_sil[0, :, :].unsqueeze(0)
+    silhouette_torch = depth_sil[1, :, :]
 
     rgb_torch = torch.clip(rgb, 0, 1)
     semantics_torch = torch.clip(semantics, 0, 1)
-    silhouette_torch = torch.clip(silhouette, 0, 1)
+    silhouette_torch = torch.clip(silhouette_torch, 0, 1)
 
-    return rgb_torch, depth, semantics_torch, silhouette_torch
+    return rgb_torch, depth_torch, semantics_torch, silhouette_torch
     
 
 def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_for_loss, sil_thres,
