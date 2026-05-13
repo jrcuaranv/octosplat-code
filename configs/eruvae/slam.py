@@ -60,7 +60,7 @@ config = dict(
     ),
     tracking=dict(
         visualize_tracking_loss = True,
-        use_gt_poses=True, #True, # Use GT Poses for Tracking, saving tracking time
+        use_gt_poses=False, #True, # Use GT Poses for Tracking, saving tracking time
         forward_prop=True, # Forward Propagate Poses
         num_iters=tracking_iters,
         use_sil_for_loss=True,
@@ -193,7 +193,7 @@ config = dict(
         using_real_robot = True,
         running_offline=False,
         real_robot=dict(
-            output_dir= '/home/companion/Documents/results_mapping/',
+            output_dir= '/mnt/ssd1T/results_mapping/',
             rgb_topic = '/camera/color/image_raw/compressed',
             depth_topic = '/camera/depth/image_rect_raw',
             crop_size = None,

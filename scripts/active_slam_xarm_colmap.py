@@ -1387,10 +1387,10 @@ class ActiveSLAM:
         #     print(f"An error occurred during optimization: {e}")
         self.full_optimization_requested = True
         time.sleep(2)
-        self.full_map_optimization(number_steps=15000)
+        self.full_map_optimization(number_steps=100)
         if not self.running_offline:
             self.full_pose_optimization()
-        # self.full_map_optimization(number_steps=500)
+        self.full_map_optimization(number_steps=100)
         self.full_optimization_requested = False
         return EmptyResponse()
     
