@@ -130,6 +130,8 @@ class ActiveSLAM:
         if prefix == 'colmap_dataset':
             self.running_colmap_dataset = True
             self.colmap_scene_path = self.config['active_mapping'][prefix]['colmap_scene_path']
+        else:
+            self.running_colmap_dataset = False
         
         self.output_directory = self.config['active_mapping'][prefix]['output_dir']
         rgb_topic = '/camera2/color/rgb'
