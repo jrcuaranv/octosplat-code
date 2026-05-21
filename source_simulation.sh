@@ -1,4 +1,5 @@
 #!/bin/bash
+# this is for pipeline running on laptop
 source ../../ssmi_ws2/devel/setup.bash
 source ~/anaconda3/etc/profile.d/conda.sh
 conda activate gss_ros

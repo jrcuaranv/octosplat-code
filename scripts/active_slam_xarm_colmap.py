@@ -56,7 +56,7 @@ from std_srvs.srv import Empty, EmptyResponse
 import math
 from scipy.spatial.transform import Rotation
 import copy
-from utils.utils_active_mapping import ViewpointEvaluation, get_semantic_image, SE3_to_ros_pose, ros_pose_to_SE3, dbscan_clustering
+from utils.utils_active_mapping import ViewpointEvaluation, filter_depth_map, get_semantic_image, SE3_to_ros_pose, ros_pose_to_SE3, dbscan_clustering
 from utils.utils_data import load_gt_data
 from datetime import datetime
 # from semantic_octomap.srv import *
@@ -88,7 +88,7 @@ from utils.slam_helpers import (
     get_c2w_from_params,transformed_params2rendervar, filter_points_in_image, transformed_params2depth_silhouette_rgbloss, transformed_entropy2rendervar, transformed_params2depthplussilhouette,
     transformed_semantics2rendervar, transformed_rgb_loss_rendervar, transform_to_frame, transform_points_to_frame, l1_loss_v1, matrix_to_quaternion
 )
-from utils.slam_external import calc_ssim, build_rotation, densify_v2, prune_outlier_semantics, prune_gaussians, densify, prune_aux_gaussians, prune_outliers
+from utils.slam_external import calc_ssim, build_rotation, densify_v2, prune_outliers_based_on_density_statistics, prune_outlier_semantics, prune_gaussians, densify, prune_aux_gaussians, prune_outliers
 
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 
@@ -126,15 +126,12 @@ class ActiveSLAM:
                                             [0.0, 0.0, 0.0, 1.0]])
 
         
-        if config['active_mapping']['using_real_robot'] == True:
-            prefix = 'real_robot'
-        else:
-            prefix = 'gazebo_robot'
+        prefix = config['active_mapping']['data_mode']
+        if prefix == 'colmap_dataset':
+            self.running_colmap_dataset = True
+            self.colmap_scene_path = self.config['active_mapping'][prefix]['colmap_scene_path']
         
         self.output_directory = self.config['active_mapping'][prefix]['output_dir']
-        self.running_offline = self.config['active_mapping']['running_offline']
-        # rgb_topic = config['active_mapping'][prefix]['rgb_topic']
-        # depth_topic = config['active_mapping'][prefix]['depth_topic']
         rgb_topic = '/camera2/color/rgb'
         depth_topic = '/camera2/color/depth'
         semantics_topic = '/camera2/color/semantics'
@@ -144,6 +141,9 @@ class ActiveSLAM:
         self.fy = self.config['active_mapping'][prefix]['fy']
         self.cx = self.config['active_mapping'][prefix]['cx']
         self.cy = self.config['active_mapping'][prefix]['cy']
+        self.apply_depth_median_filter = self.config['active_mapping'][prefix].get('apply_depth_median_filter')
+        self.apply_statistical_outlier_filter = self.config['active_mapping'][prefix].get('apply_statistical_outlier_filter')
+        self.max_depth = self.config['active_mapping'][prefix].get('max_depth')
         self.T_link6_camframe = np.array(self.config['active_mapping'][prefix]['T_link6_camframe'])
 
         # rospy.Subscriber(rgb_topic, CompressedImage, self.callback_image_raw)
@@ -191,7 +191,7 @@ class ActiveSLAM:
 
         rate = rospy.Rate(0.5)
 
-        if self.running_offline == True:
+        if self.running_colmap_dataset == True:
             self.new_rgbd_slam_session = True
         
         while not rospy.is_shutdown():
@@ -422,9 +422,10 @@ class ActiveSLAM:
         gray_image = gray_image.astype(np.uint8)
 
         return gray_image
+    
     def get_sample_data(self, dtype = torch.float):
-        if self.running_offline == True:
-            return self.get_offline_sample_data()
+        if self.running_colmap_dataset == True:
+            return self.get_colmap_sample_data()
         self.upgrade_transforms()
         intrinsics = torch.from_numpy(self.K)
         # gt_pose_w_camframe = self.get_transform('world', 'camera2_frame')
@@ -456,12 +457,16 @@ class ActiveSLAM:
         semantic_id = torch.from_numpy(semantic_id)
 
         depth = self.depth_image.astype(float) # m
+        if self.apply_depth_median_filter:
+            depth = cv2.medianBlur(depth.astype(np.float32), 5)
+        if self.apply_statistical_outlier_filter:
+            depth = filter_depth_map(depth, self.K, max_depth=self.max_depth)
         # depth = self.depth_img
         # depth = np.where(np.isnan(depth), 0.0, depth)
         depth = np.expand_dims(depth, -1) #(h,w,1)
         depth = torch.from_numpy(depth)
         depth = torch.nan_to_num(depth, nan=0.0)
-        depth[depth>1.5] = 0.0
+        depth[depth>self.max_depth] = 0.0
 
         #confidence map to from np.uint8 to np.float32
         
@@ -484,13 +489,12 @@ class ActiveSLAM:
         self.camera_pose = None
         return return_data
     
-    def get_offline_sample_data(self, dtype = torch.float):
-        colmap_scene_path = "/media/jose/SSD1G/datasets/active_mapping_2025_data/zed2i_lab_data/2026-05-09-12-28-20_lab_trees_postprocessed"
-        fx, fy, cx, cy = 452.5317077636719,452.5317077636719,403.8873596191406,234.37294006347656
-        image_dir = os.path.join(colmap_scene_path, "images")
-        semantics_dir = os.path.join(colmap_scene_path, "semantics")
-        depth_dir = os.path.join(colmap_scene_path, "depth")
-        pose_dir = os.path.join(colmap_scene_path, "poses")
+    def get_colmap_sample_data(self, dtype = torch.float):
+        # colmap_scene_path = "/media/jose/SSD1G/datasets/active_mapping_2025_data/zed2i_lab_data/2026-05-09-12-28-20_lab_trees_postprocessed"
+        image_dir = os.path.join(self.colmap_scene_path, "images")
+        semantics_dir = os.path.join(self.colmap_scene_path, "semantics")
+        depth_dir = os.path.join(self.colmap_scene_path, "depth")
+        pose_dir = os.path.join(self.colmap_scene_path, "poses")
         image_files = sorted(os.listdir(image_dir))
         random.shuffle(image_files) # to get random samples from the dataset, rather than sequential ones
         print("Number of files in the dataset:", len(image_files))
@@ -521,9 +525,7 @@ class ActiveSLAM:
             print(f"Pose file not found: {pose_path}")
             return None
 
-        intrinsics = torch.tensor([[fx, 0, cx],
-                                    [0, fy, cy],
-                                    [0, 0, 1.0]])
+        intrinsics = torch.from_numpy(self.K)
 
         T_wc_rel = np.loadtxt(pose_path)
         T_wc_rel = torch.from_numpy(T_wc_rel)
@@ -547,12 +549,17 @@ class ActiveSLAM:
         semantic_id = torch.from_numpy(semantic_id)
 
         depth = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)/1000.0 # (h,w) in uint16 format, depth in mm
+        if self.apply_depth_median_filter:
+            depth = cv2.medianBlur(depth.astype(np.float32), 5)
+        if self.apply_statistical_outlier_filter:
+            depth = filter_depth_map(depth, self.K, max_depth=self.max_depth)
+            
         # depth = self.depth_img
         # depth = np.where(np.isnan(depth), 0.0, depth)
         depth = np.expand_dims(depth, -1) #(h,w,1)
         depth = torch.from_numpy(depth)
         depth = torch.nan_to_num(depth, nan=0.0)
-        depth[depth>1.5] = 0.0
+        depth[depth>self.max_depth] = 0.0
 
         #confidence map to from np.uint8 to np.float32
         
@@ -605,6 +612,10 @@ class ActiveSLAM:
         self.eval_dir = os.path.join(output_dir, "eval")
         # os.makedirs(self.eval_dir, exist_ok=True)
         
+        # saving config file in output dir
+        with open(os.path.join(self.episode_dir, "config.yaml"), 'w') as yaml_file:
+            yaml.dump(config, yaml_file)
+
         # Get Device
         self.device = torch.device(config["primary_device"])
         if config["primary_device"].startswith("cuda:"):
@@ -656,8 +667,8 @@ class ActiveSLAM:
                 if self.new_rgbd_slam_session == True:
                     print("New RGBD SLAM session triggered. Exiting current SLAM session.")
                     return
-                if self.running_offline == True:
-                    print("Running offline. Getting next sample data...")
+                if self.running_colmap_dataset == True:
+                    print("Running colmap dataset. Getting next sample data...")
                     break
                 time.sleep(0.5)
             dataset_0 = self.get_sample_data()
@@ -732,11 +743,11 @@ class ActiveSLAM:
                             print("New RGBD SLAM session triggered. Exiting current SLAM session.")
                             return
                         while time_idx == num_frames - 1:
-                            print("Checkpoint reached at time idx 23. Pausing SLAM session for inspection.")
+                            print(f"Checkpoint reached at time idx {time_idx}. Pausing SLAM session for inspection.")
                             time.sleep(5.0)
                         
-                        if self.running_offline == True:
-                            print("Running offline. Getting next sample data...")
+                        if self.running_colmap_dataset == True:
+                            print("Running colmap dataset. Getting next sample data...")
                             break
                         while self.full_optimization_requested == True:
                             time.sleep(0.5)
@@ -1090,7 +1101,7 @@ class ActiveSLAM:
                         iter_data['semantic_color'] = self.keyframe_list[selected_rand_keyframe_idx]['semantic_color']
                     # Loss for current frame
                     
-                    if (iter+1) % 9800 == 0:
+                    if (iter+1) % 200000 == 0:
                         visualization = True
                     else:
                         visualization = False
@@ -1313,7 +1324,7 @@ class ActiveSLAM:
         pruning_dict=dict( # Needs to be updated based on the number of mapping iterations
             start_after=0,
             remove_big_after=0,
-            stop_after=7000, #20,
+            stop_after=15000, #20,
             prune_every=500,
             removal_opacity_threshold=0.4,
             final_removal_opacity_threshold=0.4,
@@ -1322,10 +1333,10 @@ class ActiveSLAM:
         )
         densify_dict=dict( # Needs to be updated based on the number of mapping iterations
             start_after=50, #500,
-            remove_big_after=3000,
-            stop_after=7000,
+            remove_big_after=1000,
+            stop_after=15000,
             densify_every= 500,#100,
-            grad_thresh=0.00005,
+            grad_thresh=0.00004,#0.00005,
             num_to_split_into=2,
             removal_opacity_threshold=0.4,
             final_removal_opacity_threshold=0.4,
@@ -1334,7 +1345,11 @@ class ActiveSLAM:
         )
         print("Running full map optimization on all keyframes...")
         for iter in range(number_steps):
-            print(f"Full Map Optimization Iteration {iter}/{number_steps}. Number of gaussians: {self.params['means3D'].shape[0]}")
+            # if iter%1000 == 0:
+            #     print("RUnning pose optimization before map optimization...")
+            #     self.full_pose_optimization()
+            if iter % 100 == 0:
+                print(f"Full Map Optimization Iteration {iter}/{number_steps}. Number of gaussians: {self.params['means3D'].shape[0]}")
             # Randomly select a frame until current time step amongst keyframes
             rand_idx = np.random.randint(0, len(self.keyframe_list))
             # Use Keyframe Data
@@ -1367,35 +1382,28 @@ class ActiveSLAM:
                 if self.config['mapping']['prune_gaussians']:
                     # self.params, self.variables = prune_gaussians(self.params, self.params_opt_exclude, self.variables, optimizer, iter, self.config['mapping']['pruning_dict'])
                     self.params, self.variables = prune_gaussians(self.params, self.params_opt_exclude, self.variables, optimizer, iter, pruning_dict)
-            # prune_outliers(self.params, self.params_opt_exclude, self.variables, optimizer) # based on density  
+                if iter%2000 == 0 and iter > 0:
+                    prune_outliers_based_on_density_statistics(self.params, self.params_opt_exclude, self.variables, optimizer, iter)
+                #     prune_outlier_semantics(self.params, self.params_opt_exclude, self.variables, optimizer)
+                #     prune_outliers(self.params, self.params_opt_exclude, self.variables, optimizer) # based on density  
             if iter%1000 == 0:
                 print(f"Completed {iter} / {number_steps} iterations of full map optimization.")
                 self.save_params_callback(req = None)
     def full_optimization_callback(self, req):
-        # human_input = input("Type 'p' for pose optimization, 'm' for map optimization, 'b' for both: ")
-        # try:
-        #     if human_input == 'p':
-        #         self.full_pose_optimization()
-        #     elif human_input == 'm':
-        #         self.full_map_optimization()
-        #     elif human_input == 'b':
-        #         self.full_pose_optimization()
-        #         self.full_map_optimization()
-        #     else:
-        #         print("Invalid input. Please try again.")
-        # except Exception as e:
-        #     print(f"An error occurred during optimization: {e}")
+        if not self.running_colmap_dataset:
+            print("Not running colmap dataset. Full optimization is only available in colmap dataset mode.")
+            return EmptyResponse()
         self.full_optimization_requested = True
         time.sleep(2)
-        self.full_map_optimization(number_steps=100)
-        if not self.running_offline:
-            self.full_pose_optimization()
-        self.full_map_optimization(number_steps=100)
+        self.full_map_optimization(number_steps=15000)
+        # if not self.running_colmap_dataset:
+        # self.full_pose_optimization()
+        # self.full_map_optimization(number_steps=100)
         self.full_optimization_requested = False
         return EmptyResponse()
     
     def save_groundtruth_and_rendered_images(self, timestamp_str=''):
-
+        # also computes evaluation metrics
         images_dir = os.path.join(self.episode_dir, timestamp_str + "_images")
         os.makedirs(images_dir, exist_ok=True)
         self.save_side_view_img(1000) # save a side view image at the end of the episode for visualization
@@ -1487,7 +1495,7 @@ class ActiveSLAM:
         print(f"Mean mIoU: {mean_miou}")
 
     def save_side_view_img(self, curr_time_idx):
-        if self.running_offline:
+        if self.running_colmap_dataset:
             return # since we dont have the transform from link_base to world frame.
         images_dir = os.path.join(self.episode_dir, "side_images")
         os.makedirs(images_dir, exist_ok=True)

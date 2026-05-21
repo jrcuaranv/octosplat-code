@@ -22,6 +22,117 @@ from torch.autograd import Variable
 from math import exp
 import math
 import open3d as o3d
+from sklearn.neighbors import KDTree
+
+
+def _compute_density_statistics(points, tree, density_k=8, radius_scale=1.8):
+    # Fast path: try using scipy + sklearn sparse graph ops to avoid Python loops
+    density_k = max(3, int(density_k))
+    N = points.shape[0]
+    query_k = min(N, density_k + 1)
+
+    # Attempt to import scipy; if missing, fall back to original loop-based implementation
+    try:
+        from sklearn.neighbors import NearestNeighbors
+        import scipy.sparse as sp
+        print("Using optimized density statistics computation with sparse graph operations.")
+    except Exception:
+        print("Scipy or sklearn not available, falling back to original density statistics computation.")
+        # fallback: original implementation using tree.query_radius
+        density_k = max(3, int(density_k))
+        query_k = min(points.shape[0], density_k + 1)
+        distances, indices = tree.query(points, k=query_k, return_distance=True)
+        if query_k <= 1:
+            return distances, indices, np.zeros(points.shape[0], dtype=bool), np.ones(points.shape[0]) * np.finfo(np.float64).eps
+
+        neighbor_distances = distances[:, 1:query_k]
+        kth_distances = neighbor_distances[:, -1]
+        radius = float(np.median(kth_distances) * radius_scale)
+        radius = max(radius, np.finfo(np.float64).eps)
+
+        radius_neighbors = tree.query_radius(points, r=radius)
+        avg_neighbor_distance = neighbor_distances.mean(axis=1)
+        global_mean = float(avg_neighbor_distance.mean())
+        global_std = float(avg_neighbor_distance.std(ddof=0)) + np.finfo(np.float64).eps
+
+        local_means = np.empty(points.shape[0], dtype=np.float64)
+        local_stds = np.empty(points.shape[0], dtype=np.float64)
+        local_counts = np.empty(points.shape[0], dtype=np.int32)
+
+        for idx, neighbors in enumerate(radius_neighbors):
+            neighbors = neighbors[neighbors != idx]
+            local_counts[idx] = neighbors.size
+            if neighbors.size < 3:
+                local_means[idx] = global_mean
+                local_stds[idx] = global_std
+                continue
+
+            local_values = avg_neighbor_distance[neighbors]
+            local_means[idx] = float(local_values.mean())
+            local_stds[idx] = float(local_values.std(ddof=0)) + np.finfo(np.float64).eps
+
+        low_density = local_counts < max(4, density_k // 2)
+        distance_outlier = avg_neighbor_distance > (local_means + 1.75 * local_stds)
+        distance_ratio_outlier = avg_neighbor_distance > (local_means * 1.35)
+        noisy_mask = low_density | distance_outlier | distance_ratio_outlier
+        return distances, indices, noisy_mask, radius_neighbors
+
+    # --- optimized path using sparse graph operations ---
+    nbrs = NearestNeighbors(n_neighbors=query_k, algorithm='kd_tree', n_jobs=-1).fit(points)
+    distances, indices = nbrs.kneighbors(points)
+    if query_k <= 1:
+        return distances, indices, np.zeros(N, dtype=bool), [np.array([], dtype=np.int32) for _ in range(N)]
+
+    neighbor_distances = distances[:, 1:query_k]  # shape (N, k-1)
+    kth = neighbor_distances[:, -1]
+    radius = float(np.median(kth) * radius_scale)
+    radius = max(radius, np.finfo(np.float64).eps)
+
+    # Build sparse connectivity matrix (CSR). mode='connectivity' returns a 0/1 matrix.
+    A = nbrs.radius_neighbors_graph(points, radius, mode='connectivity').tocsr()
+    # remove self-connections and empty entries
+    try:
+        A.setdiag(0)
+    except Exception:
+        pass
+    A.eliminate_zeros()
+
+    avg_neighbor_distance = neighbor_distances.mean(axis=1)
+    global_mean = float(avg_neighbor_distance.mean())
+    global_std = float(avg_neighbor_distance.std(ddof=0)) + np.finfo(np.float64).eps
+
+    # local counts
+    local_counts = np.asarray(A.sum(axis=1)).ravel().astype(np.int32)
+
+    # Sparse matmul to compute sum and sumsq of neighbor avg distances
+    s1 = A.dot(avg_neighbor_distance)
+    s2 = A.dot(avg_neighbor_distance**2)
+
+    local_means = np.empty(N, dtype=np.float64)
+    local_stds = np.empty(N, dtype=np.float64)
+
+    nonzero = local_counts > 0
+    local_means[nonzero] = s1[nonzero] / local_counts[nonzero]
+    mean_sq = np.zeros_like(s1)
+    mean_sq[nonzero] = s2[nonzero] / local_counts[nonzero]
+    var = np.maximum(mean_sq - local_means**2, 0.0)
+    local_stds[nonzero] = np.sqrt(var[nonzero]) + np.finfo(np.float64).eps
+
+    small_mask = local_counts < 3
+    local_means[small_mask] = global_mean
+    local_stds[small_mask] = global_std
+
+    low_density = local_counts < max(4, density_k // 2)
+    distance_outlier = avg_neighbor_distance > (local_means + 1.75 * local_stds)
+    distance_ratio_outlier = avg_neighbor_distance > (local_means * 1.35)
+    noisy_mask = low_density | distance_outlier | distance_ratio_outlier
+
+    # Convert sparse adjacency to list-of-arrays for compatibility with callers
+    indptr = A.indptr
+    indices_array = A.indices
+    radius_neighbors = [indices_array[indptr[i]:indptr[i+1]].copy() for i in range(N)]
+
+    return distances, indices, noisy_mask, radius_neighbors
 
 
 def build_rotation(q, device="cuda"):
@@ -144,10 +255,10 @@ def update_params_and_optimizer(new_params, params, params_opt_exclude, optimize
 def cat_params_to_optimizer(new_params, params, params_opt_exclude, optimizer):
     for k, v in new_params.items():
         if k in params_opt_exclude:
-            print(f"Key: {k}")
-            print(f"params[{k}].shape: {params[k].shape}")
-            print(f"v.shape: {v.shape}")
-            print(f"params[{k}].dim(): {params[k].dim()}, v.dim(): {v.dim()}")
+            # print(f"Key: {k}")
+            # print(f"params[{k}].shape: {params[k].shape}")
+            # print(f"v.shape: {v.shape}")
+            # print(f"params[{k}].dim(): {params[k].dim()}, v.dim(): {v.dim()}")
             params[k] = torch.cat((params[k], v), dim=0)
             continue
         group = [g for g in optimizer.param_groups if g['name'] == k][0]
@@ -236,9 +347,9 @@ def prune_aux_gaussians(params, params_opt_exclude, variables, optimizer):
 def prune_outlier_semantics(params, params_opt_exclude, variables, optimizer, device = "cuda"):
     semantic_targets = [[1,0,0],[0,0,0],[0,1,0]] #rgb semantics
     print("Prunning outlier semantics")
-    np.savetxt('/home/jose/params.txt',params['semantic_colors'].detach().cpu().numpy())
-    np.savetxt('/home/jose/means3D.txt',params['means3D'].detach().cpu().numpy())
-    np.savetxt('/home/jose/opt_count.txt',params['opt_count'].detach().cpu().numpy())
+    # np.savetxt('/home/jose/params.txt',params['semantic_colors'].detach().cpu().numpy())
+    # np.savetxt('/home/jose/means3D.txt',params['means3D'].detach().cpu().numpy())
+    # np.savetxt('/home/jose/opt_count.txt',params['opt_count'].detach().cpu().numpy())
     masks = []
     for sem_t in semantic_targets:
 
@@ -249,6 +360,7 @@ def prune_outlier_semantics(params, params_opt_exclude, variables, optimizer, de
     
     to_keep = masks[0] | masks[1] | masks[2]
     to_remove = ~to_keep
+    print("Number of points to remove based on semantic outlier pruning: {}".format(to_remove.sum().item()))
     # to_remove = 0*to_remove
 
     
@@ -260,15 +372,30 @@ def prune_outlier_semantics(params, params_opt_exclude, variables, optimizer, de
     return params, variables
 
 def prune_outliers(params, params_opt_exclude, variables, optimizer, device = "cuda"):
+    # Prune outliers based on radius outlier removal in Open3D
     means3D = params['means3D'].detach().cpu().numpy()
 
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(means3D)
-    pcd, inliers_idx = pcd.remove_radius_outlier(nb_points=5, radius=0.01)
+    pcd, inliers_idx = pcd.remove_radius_outlier(nb_points=10, radius=0.04)
     
     to_keep = np.zeros(len(means3D), dtype=bool)
     to_keep[inliers_idx] = True
     to_remove = ~to_keep
+    params, variables = remove_points(to_remove, params, params_opt_exclude, variables, optimizer)
+    
+    torch.cuda.empty_cache()
+    return params, variables
+
+def prune_outliers_based_on_density_statistics(params, params_opt_exclude, variables, optimizer, device = "cuda"):
+    means3D = params['means3D'].detach().cpu().numpy()
+    tree = KDTree(means3D, leaf_size=40, metric="euclidean")
+    knn_k = min(means3D.shape[0], 24) 
+    _, _, noisy_mask, _ = _compute_density_statistics(means3D, tree, density_k=min(8, knn_k - 1), radius_scale=1.8) 
+    # tree = o3d.geometry.KDTreeFlann(o3d.utility.Vector3dVector(means3D))
+    # _, _, noisy_mask, _ = _compute_density_statistics(means3D, tree, density_k=8, radius_scale=1.8)
+    to_remove = noisy_mask
+    print("Number of points to remove based on density statistics: {}".format(to_remove.sum().item()))
     params, variables = remove_points(to_remove, params, params_opt_exclude, variables, optimizer)
     
     torch.cuda.empty_cache()
@@ -283,6 +410,8 @@ def densify(params, variables, optimizer, iter, densify_dict, params_opt_exclude
             grads[grads.isnan()] = 0.0
             to_clone = torch.logical_and(grads >= grad_thresh, (
                         torch.max(torch.exp(params['log_scales']), dim=1).values <= 0.01 * variables['scene_radius']))
+            
+            print("Iteration {}: Number of points to clone: {}".format(iter, to_clone.sum().item()))
             new_params = {k: v[to_clone] for k, v in params.items() if k not in ['cam_unnorm_rots', 'cam_trans']}
             params = cat_params_to_optimizer(new_params, params, params_opt_exclude, optimizer)
             num_pts = params['means3D'].shape[0]
@@ -316,7 +445,9 @@ def densify(params, variables, optimizer, iter, densify_dict, params_opt_exclude
             to_remove = (torch.sigmoid(params['logit_opacities']) < remove_threshold).squeeze()
             if iter >= densify_dict['remove_big_after']:
                 big_points_ws = torch.exp(params['log_scales']).max(dim=1).values > 0.1 * variables['scene_radius']
+                print(f"Iteration {iter}: Number of big points to remove: {big_points_ws.sum().item()}")
                 to_remove = torch.logical_or(to_remove, big_points_ws)
+                print(f"Iteration {iter}: Total number of points to remove: {to_remove.sum().item()}")
             params, variables = remove_points(to_remove, params, params_opt_exclude, variables, optimizer)
 
             torch.cuda.empty_cache()
@@ -335,10 +466,21 @@ def densify_v2(params, variables, optimizer, iter, densify_dict, params_opt_excl
         if (iter >= densify_dict['start_after']) and (iter % densify_dict['densify_every'] == 0):
             grads = variables['means2D_gradient_accum'] / variables['denom']
             grads[grads.isnan()] = 0.0
+            ######
+            # semantic_targets = [[1,0,0],[0,1,0]] #rgb semantics
+            # masks = []
+            # for sem_t in semantic_targets:
+            #     sem_target = torch.tensor(sem_t).to(device)
+            #     rmse = torch.linalg.norm(sem_target - params['semantic_colors'].clip(0,1), axis=1)/math.sqrt(3)
+            #     to_keep_mask = rmse < 0.01
+            #     masks.append(to_keep_mask)
+            # to_keep_sem = masks[0] | masks[1]
             
+            ######
             to_clone = torch.logical_and(grads >= grad_thresh, (
                         torch.max(torch.exp(params['log_scales']), dim=1).values <= 0.01 * variables['scene_radius']))
-            
+            # to_clone = torch.logical_and(to_clone, to_keep_sem) # only clone points with valid semantics # jrcv added. TESTING
+            print(f"Iteration {iter}: Number of points to clone: {to_clone.sum().item()}")
             if to_clone.sum() > 0:
                 
                 new_params = {k: v[to_clone] for k, v in params.items() if k not in ['cam_unnorm_rots', 'cam_trans']}
@@ -382,9 +524,12 @@ def densify_v2(params, variables, optimizer, iter, densify_dict, params_opt_excl
             else:
                 remove_threshold = densify_dict['removal_opacity_threshold']
             to_remove = (torch.sigmoid(params['logit_opacities']) < remove_threshold).squeeze()
+            print(f"Iteration {iter}: Number of points to remove based on opacity: {to_remove.sum().item()}")
             if iter >= densify_dict['remove_big_after']:
-                big_points_ws = torch.exp(params['log_scales']).max(dim=1).values > 0.1 * variables['scene_radius']
+                big_points_ws = torch.exp(params['log_scales']).max(dim=1).values > 0.01 * variables['scene_radius']
+                print(f"Iteration {iter}: Number of big points to remove: {big_points_ws.sum().item()}")
                 to_remove = torch.logical_or(to_remove, big_points_ws)
+                print(f"Iteration {iter}: Total number of points to remove: {to_remove.sum().item()}")
             params, variables = remove_points(to_remove, params, params_opt_exclude, variables, optimizer)
 
             torch.cuda.empty_cache()

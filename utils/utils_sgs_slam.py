@@ -317,7 +317,7 @@ def initialize_first_timestep(dataset_0, num_frames, scene_radius_depth_ratio, m
                                                               load_semantics)
 
     # Initialize an estimate of scene radius for Gaussian-Splatting Densification
-    variables['scene_radius'] = 10*torch.max(depth)/scene_radius_depth_ratio #TODO remove 10, jrcv
+    variables['scene_radius'] = torch.max(depth)/scene_radius_depth_ratio #TODO remove 10, jrcv
 
     if densify_dataset is not None:
         return params, variables, intrinsics, w2c, cam, params_opt_exclude, densify_intrinsics, densify_cam
@@ -466,17 +466,20 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
     # Mask with valid depth values (accounts for outlier depth values)
     nan_mask = (~torch.isnan(depth)) & (~torch.isnan(uncertainty))
     
-    if ignore_outlier_depth_loss:
-        depth_error = torch.abs(curr_data['depth'] - depth) * (curr_data['depth'] > 0)
-        mask = (depth_error < 10*depth_error.median())
-        mask = mask & (curr_data['depth'] > 0)
-    else:
-        mask = (curr_data['depth'] > 0)
+    # if ignore_outlier_depth_loss:
+    #     depth_error = torch.abs(curr_data['depth'] - depth) * (curr_data['depth'] > 0)
+    #     mask = (depth_error < 10*depth_error.median())
+    #     mask = mask & (curr_data['depth'] > 0)
+    # else:
+    #     mask = (curr_data['depth'] > 0)
+
     # originally, considering mask for curr_data[depth]>0 (meaning ignoring free space),
     # results in floating gaussians that are never optimized. Any gaussian that after some optimization
     # step falls in the empty space, will stay there for ever.
     # mask = mask & nan_mask # commented, jrcv
-    mask = nan_mask
+    
+    mask = nan_mask & (curr_data['depth'] > 0)
+    
     # Mask with presence silhouette mask (accounts for empty space)
     if tracking and use_sil_for_loss:
         mask = mask & presence_sil_mask
@@ -538,16 +541,20 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
         viz_img = torch.clip(weighted_im.permute(1, 2, 0).detach().cpu(), 0, 1)
         ax[0, 0].imshow(viz_img)
         ax[0, 0].set_title("Weighted GT RGB")
-        viz_render_img = torch.clip(weighted_render_im.permute(1, 2, 0).detach().cpu(), 0, 1)
+        viz_render_img_weighted = torch.clip(weighted_render_im.permute(1, 2, 0).detach().cpu(), 0, 1)
+        viz_render_img = torch.clip(im.permute(1, 2, 0).detach().cpu(), 0, 1)
         viz_render_seg = torch.clip(rendered_seg.permute(1, 2, 0).detach().cpu(), 0, 1)
-        ax[1, 0].imshow(viz_render_img)
+        ax[1, 0].imshow(viz_render_img_weighted)
         ax[1, 0].set_title("Weighted Rendered RGB")
         ax[0, 1].imshow(weighted_depth[0].detach().cpu(), cmap="jet", vmin=0, vmax=2)
         ax[0, 1].set_title("Weighted GT Depth")
         ax[1, 1].imshow(weighted_render_depth[0].detach().cpu(), cmap="jet", vmin=0, vmax=2)
         ax[1, 1].set_title("Weighted Rendered Depth")
-        ax[0, 2].imshow(diff_rgb, cmap="jet", vmin=0, vmax=0.6)
-        ax[0, 2].set_title(f"Diff RGB, Loss: {torch.round(losses['im'])}")
+        # ax[0, 2].imshow(diff_rgb, cmap="jet", vmin=0, vmax=0.6)
+        # ax[0, 2].set_title(f"Diff RGB, Loss: {torch.round(losses['im'])}")
+        ax[0, 2].imshow(viz_render_img)
+        ax[0, 2].set_title(f"Rendered RGB")
+        
         ax[0, 3].imshow(viz_render_seg)
         ax[0, 3].set_title("Rendered sem.")
         
@@ -556,8 +563,8 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
         ax[1, 2].imshow(silhouette.detach().cpu())
         ax[1, 2].set_title("Silhoutte")
 
-        # ax[1, 2].imshow(mask.squeeze().cpu())
-        # ax[1, 2].set_title("mask")
+        ax[1, 3].imshow(mask.squeeze().cpu())
+        ax[1, 3].set_title("mask")
         
 
         # ax[0, 3].imshow(presence_sil_mask.detach().cpu(), cmap="gray")
@@ -634,7 +641,7 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
         # fig.suptitle(f"Tracking Iteration: {tracking_iteration}", fontsize=16)
         # Figure Tight Layout
         # fig.tight_layout()
-        # plt.tight_layout()
+        plt.tight_layout()
         plt.show()
         
 

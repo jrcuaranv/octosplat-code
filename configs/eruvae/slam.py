@@ -54,13 +54,13 @@ config = dict(
         start=0,
         end=-1,
         stride=1,
-        num_frames= 150, # Set to -1 to use all frames
+        num_frames= 50, # Set to -1 to use all frames
         load_semantics=True,
         num_semantic_classes=3 # background, fruit, leaves
     ),
     tracking=dict(
         visualize_tracking_loss = True,
-        use_gt_poses=False, #True, # Use GT Poses for Tracking, saving tracking time
+        use_gt_poses=True, #True, # Use GT Poses for Tracking, saving tracking time
         forward_prop=True, # Forward Propagate Poses
         num_iters=tracking_iters,
         use_sil_for_loss=True,
@@ -97,7 +97,7 @@ config = dict(
         sil_thres=0.5, #0.5 For Addition of new Gaussians. Densify areas with silh. lower than this
         use_l1=True,
         use_sil_for_loss=False,
-        ignore_outlier_depth_loss= False, #False,
+        ignore_outlier_depth_loss= True, #False,
         # loss_weights=dict(
         #     im=0.5, #0.5
         #     depth= 1.0,#1.0,
@@ -107,8 +107,8 @@ config = dict(
         # ),
         loss_weights=dict(
             im=1.0, #0.5
-            depth= 0.5,#1.0,
-            seg=0.01,#0.1
+            depth= 1.0, #0.25, #0.5,#1.0,
+            seg=0.1,#0.1
             quality=0.1, #0.1,
             depth_2 = 0.5,
         ),
@@ -170,8 +170,8 @@ config = dict(
             densify_every= 30,#100,
             grad_thresh=0.00005,
             num_to_split_into=2,
-            removal_opacity_threshold=0.02,
-            final_removal_opacity_threshold=0.02,
+            removal_opacity_threshold=0.4,
+            final_removal_opacity_threshold=0.4,
             reset_opacities=False,
             reset_opacities_every=3000, # Doesn't consider iter 0
         ),
@@ -190,12 +190,12 @@ config = dict(
         load_semantics=True, # Whether load semantic information
     ),
     active_mapping=dict(
-        using_real_robot = True,
-        running_offline=False,
+        data_mode='real_robot', # ['real_robot', 'gazebo_robot', 'colmap_dataset', 'rosbag_file'] (Adjusts Intrinsics and other data-related parameters based on the dataset being used for active mapping)
         real_robot=dict(
             output_dir= '/mnt/ssd1T/results_mapping/',
-            rgb_topic = '/camera/color/image_raw/compressed',
-            depth_topic = '/camera/depth/image_rect_raw',
+            apply_depth_median_filter = False,
+            apply_statistical_outlier_filter = True,
+            max_depth=1.5,
             crop_size = None,
             fx = 381.97095128993436,
             fy = 382.44965399519884,
@@ -208,8 +208,9 @@ config = dict(
         ),
         gazebo_robot=dict(
             output_dir= '/media/jose/SSD1G/results_mapping/',
-            rgb_topic = '/realsense_gazebo_camera/color/image_raw/compressed',
-            depth_topic = '/realsense_gazebo_camera/aligned_depth_to_color/image_raw',
+            apply_depth_median_filter = False,
+            apply_statistical_outlier_filter = True,
+            max_depth=1.5,
             crop_size = None,
             fx = 381.3624572753906,
             fy = 381.3624572753906,
@@ -219,6 +220,36 @@ config = dict(
                                 [1.0, 0.0, 0.0, 0.01],
                                 [0.0, 0.0, 1.0, 0.053],
                                 [0.0, 0.0, 0.0, 1.0]]
+        ),
+        # adjust intrinsics depending on the dataset being used for active mapping
+        colmap_dataset=dict(
+            output_dir= '/media/jose/SSD1G/results_mapping/',
+            colmap_scene_path = '/media/jose/SSD1G/datasets/active_mapping_2025_data/zed2i_lab_data/2026-05-13-11-03-47_greenhouse',
+            apply_depth_median_filter = False,
+            apply_statistical_outlier_filter = True,
+            max_depth=1.5,
+            crop_size = None,
+            fx = 452.5317077636719,
+            fy = 452.5317077636719,
+            cx = 403.8873596191406,
+            cy = 234.37294006347656,
+            T_link6_camframe = None, # Not needed for colmap dataset since poses are already in the camera frame
+        ),
+        # adjust intrinsics depending on the dataset being used for active mapping
+        rosbag_file=dict(
+            output_dir= '/media/jose/SSD1G/results_mapping/',
+            apply_depth_median_filter = False,
+            apply_statistical_outlier_filter = True,
+            max_depth=1.5,
+            crop_size = None,
+            fx = 381.97095128993436,
+            fy = 382.44965399519884,
+            cx = 316.09723809,
+            cy = 235.35205365,
+            T_link6_camframe = [[ 0.01791203, -1.00004949,  0.00200584,  0.00739383],
+                                [ 0.99971913,  0.01790737, -0.00507818, -0.00849351],
+                                [ 0.00504143,  0.00209712,  0.99988083,  0.05245934],
+                                [ 0.,          0.,          0.,          1.        ]]
         ),
     ),
 )

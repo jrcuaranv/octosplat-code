@@ -43,7 +43,7 @@ def save_params(output_params, output_dir, save_ply=True, file_prefix=""):
     np.savez(save_path, **to_save)
     if save_ply:
         convert(to_save, os.path.join(output_dir, file_prefix+"params.ply"), is_semantic=False)
-        # convert(to_save, os.path.join(output_dir, file_prefix+"seg_params.ply"), is_semantic=True)        
+        convert(to_save, os.path.join(output_dir, file_prefix+"seg_params.ply"), is_semantic=True)        
 
 
 def save_params_ckpt(output_params, output_dir, time_idx):
