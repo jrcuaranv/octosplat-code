@@ -1392,9 +1392,6 @@ class ActiveSLAM:
                 print(f"Completed {iter} / {number_steps} iterations of full map optimization.")
                 self.save_params_callback(req = None)
     def full_optimization_callback(self, req):
-        if not self.running_colmap_dataset:
-            print("Not running colmap dataset. Full optimization is only available in colmap dataset mode.")
-            return EmptyResponse()
         self.full_optimization_requested = True
         time.sleep(2)
         self.full_map_optimization(number_steps=15000)
