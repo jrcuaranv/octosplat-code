@@ -139,6 +139,7 @@ config = dict(
         #     reset_opacities_every=500, # Doesn't consider iter 0
         # ),
         prune_gaussians=True, # Prune Gaussians during Mapping
+        prune_background_gaussians=False,
         pruning_dict=dict( # Needs to be updated based on the number of mapping iterations
             start_after=1,
             remove_big_after=0,
