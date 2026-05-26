@@ -88,7 +88,7 @@ from utils.slam_helpers import (
     get_c2w_from_params,transformed_params2rendervar, filter_points_in_image, transformed_params2depth_silhouette_rgbloss, transformed_entropy2rendervar, transformed_params2depthplussilhouette,
     transformed_semantics2rendervar, transformed_rgb_loss_rendervar, transform_to_frame, transform_points_to_frame, l1_loss_v1, matrix_to_quaternion
 )
-from utils.slam_external import calc_ssim, build_rotation, densify_v2, prune_outliers_based_on_density_statistics, prune_outlier_semantics, prune_gaussians, densify, prune_aux_gaussians, prune_outliers
+from utils.slam_external import calc_ssim, build_rotation, densify_v2, prune_outliers_based_on_density_statistics, prune_background_semantics, prune_outlier_semantics, prune_gaussians, densify, prune_aux_gaussians, prune_outliers
 
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 
@@ -130,8 +130,15 @@ class ActiveSLAM:
         if prefix == 'colmap_dataset':
             self.running_colmap_dataset = True
             self.colmap_scene_path = self.config['active_mapping'][prefix]['colmap_scene_path']
+            self.train_files, self.test_files = self.split_colmap_dataset()
+            self.intrinsics = np.loadtxt(os.path.join(self.colmap_scene_path, "intrinsics.txt"))
+            self.fx, self.fy, self.cx, self.cy = self.intrinsics[0, 0], self.intrinsics[1, 1], self.intrinsics[0, 2], self.intrinsics[1, 2]
         else:
             self.running_colmap_dataset = False
+            self.fx = self.config['active_mapping'][prefix]['fx']
+            self.fy = self.config['active_mapping'][prefix]['fy']
+            self.cx = self.config['active_mapping'][prefix]['cx']
+            self.cy = self.config['active_mapping'][prefix]['cy']
         
         self.output_directory = self.config['active_mapping'][prefix]['output_dir']
         rgb_topic = '/camera2/color/rgb'
@@ -139,10 +146,7 @@ class ActiveSLAM:
         semantics_topic = '/camera2/color/semantics'
         confidence_topic = '/camera2/color/confidence'
         self.crop_size = self.config['active_mapping'][prefix]['crop_size']
-        self.fx = self.config['active_mapping'][prefix]['fx']
-        self.fy = self.config['active_mapping'][prefix]['fy']
-        self.cx = self.config['active_mapping'][prefix]['cx']
-        self.cy = self.config['active_mapping'][prefix]['cy']
+            
         self.apply_depth_median_filter = self.config['active_mapping'][prefix].get('apply_depth_median_filter')
         self.apply_statistical_outlier_filter = self.config['active_mapping'][prefix].get('apply_statistical_outlier_filter')
         self.max_depth = self.config['active_mapping'][prefix].get('max_depth')
@@ -254,7 +258,9 @@ class ActiveSLAM:
         file_prefix = timestamp + '_' +self.params_file_prefix
         save_params(self.params, self.episode_dir, save_ply=True, file_prefix=file_prefix)
         # save_params(self.params, self.episode_dir, save_ply=False, file_prefix=self.params_file_prefix)
-        self.save_groundtruth_and_rendered_images(timestamp_str = timestamp)
+        self.eval_training(timestamp_str = timestamp)
+        if self.running_colmap_dataset:
+            self.eval_test(timestamp_str = timestamp)
         return EmptyResponse()
     def callback_octomap_status(self, msg):
         self.octomap_status = msg.data
@@ -427,7 +433,16 @@ class ActiveSLAM:
     
     def get_sample_data(self, dtype = torch.float):
         if self.running_colmap_dataset == True:
-            return self.get_colmap_sample_data()
+            sample_data = None
+            while sample_data is None:
+                if self.offline_sample_idx >= len(self.train_files):
+                    print("All samples from the training dataset have been used")
+                    return None
+                file_name = self.train_files[self.offline_sample_idx]
+                sample_data = self.get_colmap_sample_data(file_name)
+                self.offline_sample_idx += 1
+            return sample_data
+        
         self.upgrade_transforms()
         intrinsics = torch.from_numpy(self.K)
         # gt_pose_w_camframe = self.get_transform('world', 'camera2_frame')
@@ -491,34 +506,41 @@ class ActiveSLAM:
         self.camera_pose = None
         return return_data
     
-    def get_colmap_sample_data(self, dtype = torch.float):
-        # colmap_scene_path = "/media/jose/SSD1G/datasets/active_mapping_2025_data/zed2i_lab_data/2026-05-09-12-28-20_lab_trees_postprocessed"
+    def split_colmap_dataset(self):
         image_dir = os.path.join(self.colmap_scene_path, "images")
+        image_files = sorted(os.listdir(image_dir))
+        random.shuffle(image_files) # to get random samples from the dataset, rather than sequential ones
+        print("Number of files in the colmap dataset:", len(image_files))
+        split_idx = int(0.8 * len(image_files))
+        train_files = image_files[:split_idx]
+        test_files = image_files[split_idx:]
+        print("Number of training files:", len(train_files))
+        print("Number of test files:", len(test_files))
+        return train_files, test_files
+    
+    def get_colmap_sample_data(self, file_name, dtype = torch.float):
+        image_dir = os.path.join(self.colmap_scene_path, "images") # contains both train and test images
+        
         semantics_dir = os.path.join(self.colmap_scene_path, "semantics")
+        confidences_dir = os.path.join(self.colmap_scene_path, "confidences")
         depth_dir = os.path.join(self.colmap_scene_path, "depth")
         pose_dir = os.path.join(self.colmap_scene_path, "poses")
         image_files = sorted(os.listdir(image_dir))
-        random.shuffle(image_files) # to get random samples from the dataset, rather than sequential ones
-        print("Number of files in the dataset:", len(image_files))
-        rgb_path = os.path.join(image_dir, image_files[self.offline_sample_idx])
-        semantic_path = os.path.join(semantics_dir, image_files[self.offline_sample_idx])
-        depth_path = os.path.join(depth_dir, image_files[self.offline_sample_idx])
-        pose_path = os.path.join(pose_dir, image_files[self.offline_sample_idx].replace(".png", ".txt"))
         
-        while not os.path.exists(rgb_path) or not os.path.exists(semantic_path) or not os.path.exists(depth_path) or not os.path.exists(pose_path):
-            print(f"Some files for the current sample {self.offline_sample_idx} are missing. Skipping to the next sample...")
-            self.offline_sample_idx += 1
-            rgb_path = os.path.join(image_dir, image_files[self.offline_sample_idx])
-            semantic_path = os.path.join(semantics_dir, image_files[self.offline_sample_idx])
-            depth_path = os.path.join(depth_dir, image_files[self.offline_sample_idx])
-            pose_path = os.path.join(pose_dir, image_files[self.offline_sample_idx].replace(".png", ".txt"))
-        # check if all files exist
-
+        rgb_path = os.path.join(image_dir, file_name)
+        semantic_path = os.path.join(semantics_dir, file_name)
+        confidences_path = os.path.join(confidences_dir, file_name)
+        depth_path = os.path.join(depth_dir, file_name)
+        pose_path = os.path.join(pose_dir, file_name.replace(".png", ".txt"))
+        
         if not os.path.exists(rgb_path):
             print(f"RGB image not found: {rgb_path}")
             return None
         if not os.path.exists(semantic_path):
             print(f"Semantic image not found: {semantic_path}")
+            return None
+        if not os.path.exists(confidences_path):
+            print(f"Confidence map not found: {confidences_path}")
             return None
         if not os.path.exists(depth_path):
             print(f"Depth image not found: {depth_path}")
@@ -550,24 +572,25 @@ class ActiveSLAM:
         semantic_id = np.expand_dims(semantic_id, -1)#(h,w,1)
         semantic_id = torch.from_numpy(semantic_id)
 
+        # confidence_map = np.ones_like(depth.squeeze()).astype(float) # just for testing
+        confidence_map = cv2.imread(confidences_path, cv2.IMREAD_UNCHANGED) #(h,w), confidence in [0,255]
+        # valid_confidence_mask = (confidence_map > 0.2) & (confidence_map != 127)
+        confidence_map = confidence_map.astype(float) / 255.0
+        confidence_map = torch.from_numpy(confidence_map)
+
         depth = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)/1000.0 # (h,w) in uint16 format, depth in mm
         if self.apply_depth_median_filter:
             depth = cv2.medianBlur(depth.astype(np.float32), 5)
         if self.apply_statistical_outlier_filter:
             depth = filter_depth_map(depth, self.K, max_depth=self.max_depth)
             
-        # depth = self.depth_img
-        # depth = np.where(np.isnan(depth), 0.0, depth)
+        # depth = depth * valid_confidence_mask
         depth = np.expand_dims(depth, -1) #(h,w,1)
         depth = torch.from_numpy(depth)
         depth = torch.nan_to_num(depth, nan=0.0)
         depth[depth>self.max_depth] = 0.0
 
-        #confidence map to from np.uint8 to np.float32
         
-        # confidence_map = copy.deepcopy(self.confidence_image).astype(float) / 255.0
-        confidence_map = np.ones_like(depth.squeeze()).astype(float) # just for testing
-        confidence_map = torch.from_numpy(confidence_map)
         return_data = (
             rgb_image.to(self.device).type(dtype),
             depth.to(self.device).type(dtype),
@@ -584,7 +607,7 @@ class ActiveSLAM:
         self.confidence_image = None
         self.camera_pose = None
 
-        self.offline_sample_idx += 1
+        
         return return_data
 
 
@@ -731,7 +754,7 @@ class ActiveSLAM:
             T_wc = np.block([[R, t],
                                     [0.0, 0.0, 0.0, 1.0]])
             T_cw = np.linalg.inv(T_wc)
-            # render_any_cam(params, T_cw, device=self.device)
+            
             if time_idx>0:
                 # self.pub_gs_status.publish(Float32(1.0))
                 valid_depth = False
@@ -770,7 +793,7 @@ class ActiveSLAM:
                 
                 sem_mask = (rmse < 0.01) # TODO add parameters
                 stable_gaussians_mask = (self.params['opt_count'] > 10) # TODO add parameters
-                target_sem_mask = sem_mask & stable_gaussians_mask
+                target_sem_mask = sem_mask.view(-1) & stable_gaussians_mask.view(-1)
 
                 n_sem_gaussians = sem_mask.sum().item()
                 n_stable_sem_gaussians = target_sem_mask.sum().item()
@@ -788,7 +811,8 @@ class ActiveSLAM:
 
                     sem_centroids = dbscan_clustering(target_gaussians_3D, eps_= 0.02, min_samples=100) # 250
                     sem_centroids_w = sem_centroids
-                    print("world sem centroids:\n", sem_centroids_w)
+                    
+                    print(f"Number of semantic centroids: {sem_centroids_w.shape[0]}")
                     # generate candidate viewpoints
                     cand_camframe_poses = [] #wrt world frame
                     cand_camlink_poses = []
@@ -1122,6 +1146,9 @@ class ActiveSLAM:
                     with torch.no_grad():
                         # Prune Gaussians
                         # Gaussian-Splatting's Gradient-based Densification
+                        # if time_idx > 30 and (iter == 50 or iter == 55):
+                        #     print("Iteration:", iter)
+                        #     input("Press enter to continue before densification/pruning step")
                         if config['mapping']['use_gaussian_splatting_densification']:
                             self.params, self.variables = densify_v2(self.params, self.variables, optimizer, iter, config['mapping']['densify_dict'], self.params_opt_exclude, device=self.device)
                         # Optimizer Update
@@ -1131,11 +1158,16 @@ class ActiveSLAM:
                         prune_start_time = time.time()
                         if config['mapping']['prune_gaussians']:
                             self.params, self.variables = prune_gaussians(self.params, self.params_opt_exclude, self.variables, optimizer, iter, config['mapping']['pruning_dict'])
+                            self.params, self.variables = prune_background_semantics(self.params, self.params_opt_exclude, self.variables, optimizer, iter, config['mapping']['pruning_dict'])
+                            # self.params, self.variables = prune_outliers_based_on_density_statistics(self.params, self.params_opt_exclude, self.variables, optimizer, iter, config['mapping']['pruning_dict'], device=self.device)
                             # if iter == self.num_iters_mapping - 1:
                             #     params, self.variables = prune_outlier_semantics(params, self.params_opt_exclude, self.variables, optimizer)
                         prune_end_time = time.time()
                         prune_compute_times.append(prune_end_time - prune_start_time)
-                            
+                        
+                        # if time_idx > 30 and (iter == 50 or iter == 55):
+                        #     print("Iteration:", iter)
+                        #     input("Press enter to continue after densification and pruning step")
                        
                         
                         #test clipping semantic colors jrcv, TODO Check
@@ -1381,11 +1413,12 @@ class ActiveSLAM:
                 optimizer.zero_grad(set_to_none=True)
                 
                 # Prune Gaussians
-                if self.config['mapping']['prune_gaussians']:
-                    # self.params, self.variables = prune_gaussians(self.params, self.params_opt_exclude, self.variables, optimizer, iter, self.config['mapping']['pruning_dict'])
-                    self.params, self.variables = prune_gaussians(self.params, self.params_opt_exclude, self.variables, optimizer, iter, pruning_dict)
-                if iter%2000 == 0 and iter > 0:
-                    prune_outliers_based_on_density_statistics(self.params, self.params_opt_exclude, self.variables, optimizer, iter)
+                # self.params, self.variables = prune_gaussians(self.params, self.params_opt_exclude, self.variables, optimizer, iter, self.config['mapping']['pruning_dict'])
+                self.params, self.variables = prune_gaussians(self.params, self.params_opt_exclude, self.variables, optimizer, iter, pruning_dict)
+                self.params, self.variables = prune_background_semantics(self.params, self.params_opt_exclude, self.variables, optimizer, iter, pruning_dict)
+                
+                # if iter%2000 == 0:
+                #     prune_outliers_based_on_density_statistics(self.params, self.params_opt_exclude, self.variables, optimizer, iter, pruning_dict)
                 #     prune_outlier_semantics(self.params, self.params_opt_exclude, self.variables, optimizer)
                 #     prune_outliers(self.params, self.params_opt_exclude, self.variables, optimizer) # based on density  
             if iter%1000 == 0:
@@ -1401,9 +1434,9 @@ class ActiveSLAM:
         self.full_optimization_requested = False
         return EmptyResponse()
     
-    def save_groundtruth_and_rendered_images(self, timestamp_str=''):
+    def eval_training(self, timestamp_str=''):
         # also computes evaluation metrics
-        images_dir = os.path.join(self.episode_dir, timestamp_str + "_images")
+        images_dir = os.path.join(self.episode_dir, timestamp_str + "_train_images")
         os.makedirs(images_dir, exist_ok=True)
         self.save_side_view_img(1000) # save a side view image at the end of the episode for visualization
         psnr_list = []
@@ -1417,10 +1450,11 @@ class ActiveSLAM:
             gt_color_torch = self.keyframe_list[frame_idx]['color']
             gt_semantics_torch = self.keyframe_list[frame_idx]['semantic_color']
             gt_depth_torch = self.keyframe_list[frame_idx]['depth'].squeeze().float()
+            gt_confidence_map_torch = self.keyframe_list[frame_idx]['confidence_map']
             rendered_color_torch, rendered_depth_torch, rendered_semantics_torch, rendered_silhouette_torch = render_cam(self.params, self.cam, curr_time_idx)
             
             # computing evaluation metric
-            psnr, ssim, lpips_score, rmse, depth_l1, miou = eval_single_frame(gt_color_torch, gt_depth_torch, gt_semantics_torch, rendered_color_torch, rendered_depth_torch, rendered_semantics_torch)
+            psnr, ssim, lpips_score, rmse, depth_l1, miou = eval_single_frame(gt_color_torch, gt_depth_torch, gt_semantics_torch, gt_confidence_map_torch, rendered_color_torch, rendered_depth_torch, rendered_semantics_torch)
             psnr_list.append(psnr)
             ssmi_list.append(ssim)
             lpips_list.append(lpips_score)
@@ -1479,6 +1513,8 @@ class ActiveSLAM:
         mean_miou = np.mean(miou_list)
         metrics_output_path = os.path.join(self.episode_dir, timestamp_str+"_evaluation_metrics.txt")
         with open(metrics_output_path, 'w') as f:
+            f.write(f"Training Evaluation Metrics\n")
+            f.write(f"Number of gaussians: {self.params['means3D'].shape[0]}\n")
             f.write(f"Mean PSNR: {mean_psnr}\n")
             f.write(f"Mean SSIM: {mean_ssim}\n")
             f.write(f"Mean LPIPS: {mean_lpips}\n")
@@ -1486,13 +1522,120 @@ class ActiveSLAM:
             f.write(f"Mean Depth L1: {mean_depth_l1}\n")
             f.write(f"Mean mIoU: {mean_miou}\n")
         # printing metrics
-        print(f"\nMean PSNR: {mean_psnr}")
+        print(f"\nTraining Evaluation Metrics:")
+        print(f"\nNumber of gaussians: {self.params['means3D'].shape[0]}")
+        print(f"Mean PSNR: {mean_psnr}")
         print(f"Mean SSIM: {mean_ssim}")
         print(f"Mean LPIPS: {mean_lpips}")
         print(f"Mean RMSE: {mean_rmse}")
         print(f"Mean Depth L1: {mean_depth_l1}")
         print(f"Mean mIoU: {mean_miou}")
 
+    def eval_test(self, timestamp_str=''):
+        # also computes evaluation metrics
+        images_dir = os.path.join(self.episode_dir, timestamp_str + "_test_images")
+        os.makedirs(images_dir, exist_ok=True)
+        psnr_list = []
+        ssmi_list = []
+        lpips_list = []
+        rmse_list = []
+        depth_l1_list = []
+        miou_list = []
+        curr_time_idx = 0
+
+        for file_name in self.test_files:
+            sample_data = self.get_colmap_sample_data(file_name)
+            if sample_data is None:
+                continue
+            gt_color_torch, gt_depth_torch, intrinsics, c2w_torch, _, gt_semantics_torch, gt_confidence_map_torch = sample_data
+            gt_color_torch = gt_color_torch.permute(2,0,1)/255
+            gt_semantics_torch = gt_semantics_torch.permute(2,0,1)/255
+            gt_depth_torch = gt_depth_torch.permute(2,0,1).squeeze().float()
+
+            height, width = gt_color_torch.shape[1], gt_color_torch.shape[2]
+            w2c_torch = torch.linalg.inv(c2w_torch)
+            w2c_numpy = w2c_torch.detach().cpu().numpy()
+            rendered_color_torch, rendered_depth_torch, rendered_semantics_torch, rendered_silhouette_torch = render_any_cam(self.params, w2c_numpy, height, width, intrinsics=intrinsics, render_all = True)
+            
+            # computing evaluation metric
+            psnr, ssim, lpips_score, rmse, depth_l1, miou = eval_single_frame(gt_color_torch, gt_depth_torch, gt_semantics_torch, gt_confidence_map_torch, rendered_color_torch, rendered_depth_torch, rendered_semantics_torch)
+
+            psnr_list.append(psnr)
+            ssmi_list.append(ssim)
+            lpips_list.append(lpips_score)
+            rmse_list.append(rmse)
+            depth_l1_list.append(depth_l1)
+            miou_list.append(miou)
+
+            gt_color_torch = gt_color_torch.permute(1,2,0).float()
+            gt_color_numpy  = (gt_color_torch.detach().cpu().numpy() * 255).astype(np.uint8)
+            gt_semantics_torch = gt_semantics_torch.permute(1,2,0).float()
+            gt_semantics_numpy  = (gt_semantics_torch.detach().cpu().numpy() * 255).astype(np.uint8)
+            gt_depth_numpy = gt_depth_torch.detach().cpu().numpy()
+            
+            rendered_color_numpy  = (rendered_color_torch.permute(1, 2, 0).detach().cpu().numpy() * 255).astype(np.uint8)
+            rendered_depth_numpy = rendered_depth_torch.squeeze().detach().cpu().numpy()
+            rendered_semantics_numpy = (rendered_semantics_torch.permute(1, 2, 0).detach().cpu().numpy() * 255).astype(np.uint8)
+            rendered_silhouette_numpy = rendered_silhouette_torch.detach().cpu().numpy()
+
+            valid_mask = rendered_silhouette_numpy > 0.2 #0.9
+            rendered_color_numpy[~valid_mask] = 0
+            rendered_depth_numpy[~valid_mask] = 0
+            rendered_semantics_numpy[~valid_mask] = 0
+
+            c2w_numpy = c2w_torch.detach().cpu().numpy()
+            np.savetxt(os.path.join(images_dir, f"frame_{curr_time_idx}_pose.txt"), c2w_numpy)
+
+            # converting depth maps to colorable depth maps for visualization
+            depth_min = 0
+            depth_max = 2
+            depth_range = depth_max - depth_min
+            gt_depth_vis = (gt_depth_numpy - depth_min) / depth_range * 255
+            gt_depth_vis = gt_depth_vis.astype(np.uint8)
+            gt_depth_vis_color = cv2.applyColorMap(gt_depth_vis, cv2.COLORMAP_JET)
+            rendered_depth_vis = (rendered_depth_numpy - depth_min) / depth_range * 255
+            rendered_depth_vis = rendered_depth_vis.astype(np.uint8)
+            rendered_depth_vis_color = cv2.applyColorMap(rendered_depth_vis, cv2.COLORMAP_JET)
+
+            rendered_silhouette_vis = (rendered_silhouette_numpy * 255).astype(np.uint8)
+            rendered_silhouette_vis_color = cv2.applyColorMap(rendered_silhouette_vis, cv2.COLORMAP_JET)
+
+            
+            # Save GT and Rendered Images
+            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_color_gt.png"), cv2.cvtColor(gt_color_numpy, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_depth_gt.png"), gt_depth_vis_color)
+            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_semantics_gt.png"), cv2.cvtColor(gt_semantics_numpy, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_color_rendered.png"), cv2.cvtColor(rendered_color_numpy, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_depth_rendered.png"), rendered_depth_vis_color)
+            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_semantics_rendered.png"), cv2.cvtColor(rendered_semantics_numpy, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_silhouette_rendered.png"), rendered_silhouette_vis_color)
+            curr_time_idx += 1
+        mean_psnr = np.mean(psnr_list)
+        mean_ssim = np.mean(ssmi_list)
+        mean_lpips = np.mean(lpips_list)
+        mean_rmse = np.mean(rmse_list)
+        mean_depth_l1 = np.mean(depth_l1_list)
+        mean_miou = np.mean(miou_list)
+        metrics_output_path = os.path.join(self.episode_dir, timestamp_str+"_evaluation_metrics.txt")
+        with open(metrics_output_path, 'a') as f:
+            f.write(f"\nTest Evaluation Metrics\n")
+            f.write(f"Number of gaussians: {self.params['means3D'].shape[0]}\n")
+            f.write(f"Mean PSNR: {mean_psnr}\n")
+            f.write(f"Mean SSIM: {mean_ssim}\n")
+            f.write(f"Mean LPIPS: {mean_lpips}\n")
+            f.write(f"Mean RMSE: {mean_rmse}\n")
+            f.write(f"Mean Depth L1: {mean_depth_l1}\n")
+            f.write(f"Mean mIoU: {mean_miou}\n")
+        # printing metrics
+        print(f"\nTest Evaluation Metrics:")
+        print(f"Number of gaussians: {self.params['means3D'].shape[0]}")
+        print(f"Mean PSNR: {mean_psnr}")
+        print(f"Mean SSIM: {mean_ssim}")
+        print(f"Mean LPIPS: {mean_lpips}")
+        print(f"Mean RMSE: {mean_rmse}")
+        print(f"Mean Depth L1: {mean_depth_l1}")
+        print(f"Mean mIoU: {mean_miou}")
+    
     def save_side_view_img(self, curr_time_idx):
         if self.running_colmap_dataset:
             return # since we dont have the transform from link_base to world frame.
@@ -1516,8 +1659,10 @@ class ActiveSLAM:
         t = t.reshape(3, 1)
         T_wc = np.block([[R_w_cam, t],[0.0, 0.0, 0.0, 1.0]])
         T_cw = np.linalg.inv(T_wc)
-        side_view_torch = render_any_cam(self.params, T_cw, height = 480, width = 1280)
-        side_view_numpy = (side_view_torch.detach().cpu().numpy() * 255).astype(np.uint8)
+        side_view_torch, _, _, _ = render_any_cam(self.params, T_cw, height = 480, width = 1280)
+        side_view_torch = side_view_torch.permute(1, 2, 0).detach().cpu()
+        side_view_torch[side_view_torch==0] = 1.0 # set background white
+        side_view_numpy = (side_view_torch.numpy() * 255).astype(np.uint8)
         cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_side_view_rendered.png"), cv2.cvtColor(side_view_numpy, cv2.COLOR_RGB2BGR))
 def main():
     parser = argparse.ArgumentParser()

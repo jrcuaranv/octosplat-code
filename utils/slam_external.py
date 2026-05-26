@@ -23,7 +23,18 @@ from math import exp
 import math
 import open3d as o3d
 from sklearn.neighbors import KDTree
-
+print_colors = {
+    'red': "\033[31m",
+    'green': "\033[32m",
+    'yellow': "\033[33m",
+    'blue': "\033[34m",
+        'reset': "\033[0m"
+}
+RED = print_colors['red']
+GREEN = print_colors['green']
+YELLOW = print_colors['yellow']
+BLUE = print_colors['blue']
+RESET = print_colors['reset']
 
 def _compute_density_statistics(points, tree, density_k=8, radius_scale=1.8):
     # Fast path: try using scipy + sklearn sparse graph ops to avoid Python loops
@@ -255,10 +266,6 @@ def update_params_and_optimizer(new_params, params, params_opt_exclude, optimize
 def cat_params_to_optimizer(new_params, params, params_opt_exclude, optimizer):
     for k, v in new_params.items():
         if k in params_opt_exclude:
-            # print(f"Key: {k}")
-            # print(f"params[{k}].shape: {params[k].shape}")
-            # print(f"v.shape: {v.shape}")
-            # print(f"params[{k}].dim(): {params[k].dim()}, v.dim(): {v.dim()}")
             params[k] = torch.cat((params[k], v), dim=0)
             continue
         group = [g for g in optimizer.param_groups if g['name'] == k][0]
@@ -267,10 +274,18 @@ def cat_params_to_optimizer(new_params, params, params_opt_exclude, optimizer):
             stored_state["exp_avg"] = torch.cat((stored_state["exp_avg"], torch.zeros_like(v)), dim=0)
             stored_state["exp_avg_sq"] = torch.cat((stored_state["exp_avg_sq"], torch.zeros_like(v)), dim=0)
             del optimizer.state[group['params'][0]]
+            # if group['params'][0].dim() == 1:
+            #     group["params"][0] = group["params"][0].view(-1, 1)
+            # if v.dim() == 1:
+            #     v = v.view(-1, 1)
             group["params"][0] = torch.nn.Parameter(torch.cat((group["params"][0], v), dim=0).requires_grad_(True))
             optimizer.state[group['params'][0]] = stored_state
             params[k] = group["params"][0]
         else:
+            # if group['params'][0].dim() == 1:
+            #     group["params"][0] = group["params"][0].view(-1, 1)
+            # if v.dim() == 1:
+            #     v = v.view(-1, 1)
             group["params"][0] = torch.nn.Parameter(torch.cat((group["params"][0], v), dim=0).requires_grad_(True))
             params[k] = group["params"][0]
     return params
@@ -316,18 +331,20 @@ def inverse_sigmoid(x):
 def prune_gaussians(params, params_opt_exclude, variables, optimizer, iter, prune_dict):
     if iter <= prune_dict['stop_after']:
         if (iter >= prune_dict['start_after']) and (iter % prune_dict['prune_every'] == 0):
+            print(f"{RED}\nPruning Gaussians at iteration {iter}{RESET}")
             if iter == prune_dict['stop_after']:
                 remove_threshold = prune_dict['final_removal_opacity_threshold']
             else:
                 remove_threshold = prune_dict['removal_opacity_threshold']
             # Remove Gaussians with low opacity
             to_remove = (torch.sigmoid(params['logit_opacities']) < remove_threshold).squeeze()
-            
+            print(f"Iteration {iter}: (Pruning) Number of points to remove based on opacity: {to_remove.sum().item()}")
             # Remove Gaussians that are too big
             if iter >= prune_dict['remove_big_after']:
-                big_points_ws = torch.exp(params['log_scales']).max(dim=1).values > 0.1 * variables['scene_radius']
-                
+                big_points_ws = torch.exp(params['log_scales']).max(dim=1).values > 5e-3 #0.1 * variables['scene_radius']
+                print(f"Iteration {iter}: (Pruning) Number of big points to remove based on size: {big_points_ws.sum().item()}")
                 to_remove = torch.logical_or(to_remove, big_points_ws)
+            print(f"Iteration {iter}: (Prunning) Total Number of points to remove: {to_remove.sum().item()}")
             params, variables = remove_points(to_remove, params, params_opt_exclude, variables, optimizer)
             torch.cuda.empty_cache()
         
@@ -371,6 +388,23 @@ def prune_outlier_semantics(params, params_opt_exclude, variables, optimizer, de
     torch.cuda.empty_cache()
     return params, variables
 
+def prune_background_semantics(params, params_opt_exclude, variables, optimizer, iter, prune_dict, device = "cuda"):
+    if iter <= prune_dict['stop_after']:
+        if (iter >= prune_dict['start_after']) and (iter % prune_dict['prune_every'] == 0):
+            semantic_target = [0,0,0]
+            print(f"{BLUE}\nPrunning background semantics at iteration {iter}{RESET}")
+            sem_target = torch.tensor(semantic_target).to(device)
+            rmse = torch.linalg.norm(sem_target - params['semantic_colors'].clip(0,1), axis=1)/math.sqrt(3)
+            to_remove = rmse < 0.2
+            
+            print("Number of points to remove based on background pruning: {}".format(to_remove.sum().item()))
+            params, variables = remove_points(to_remove, params, params_opt_exclude, variables, optimizer)
+            
+            # params['semantic_colors'] = params['semantic_colors'].clip(0,1) # might not be necessary
+            torch.cuda.empty_cache()
+    return params, variables
+
+
 def prune_outliers(params, params_opt_exclude, variables, optimizer, device = "cuda"):
     # Prune outliers based on radius outlier removal in Open3D
     means3D = params['means3D'].detach().cpu().numpy()
@@ -387,18 +421,20 @@ def prune_outliers(params, params_opt_exclude, variables, optimizer, device = "c
     torch.cuda.empty_cache()
     return params, variables
 
-def prune_outliers_based_on_density_statistics(params, params_opt_exclude, variables, optimizer, device = "cuda"):
-    means3D = params['means3D'].detach().cpu().numpy()
-    tree = KDTree(means3D, leaf_size=40, metric="euclidean")
-    knn_k = min(means3D.shape[0], 24) 
-    _, _, noisy_mask, _ = _compute_density_statistics(means3D, tree, density_k=min(8, knn_k - 1), radius_scale=1.8) 
-    # tree = o3d.geometry.KDTreeFlann(o3d.utility.Vector3dVector(means3D))
-    # _, _, noisy_mask, _ = _compute_density_statistics(means3D, tree, density_k=8, radius_scale=1.8)
-    to_remove = noisy_mask
-    print("Number of points to remove based on density statistics: {}".format(to_remove.sum().item()))
-    params, variables = remove_points(to_remove, params, params_opt_exclude, variables, optimizer)
-    
-    torch.cuda.empty_cache()
+def prune_outliers_based_on_density_statistics(params, params_opt_exclude, variables, optimizer, iter, prune_dict, device = "cuda"):
+    if iter <= prune_dict['stop_after']:
+        if (iter >= prune_dict['start_after']) and (iter % prune_dict['prune_every'] == 0):
+            means3D = params['means3D'].detach().cpu().numpy()
+            tree = KDTree(means3D, leaf_size=40, metric="euclidean")
+            knn_k = min(means3D.shape[0], 24) 
+            _, _, noisy_mask, _ = _compute_density_statistics(means3D, tree, density_k=min(8, knn_k - 1), radius_scale=1.8) 
+            # tree = o3d.geometry.KDTreeFlann(o3d.utility.Vector3dVector(means3D))
+            # _, _, noisy_mask, _ = _compute_density_statistics(means3D, tree, density_k=8, radius_scale=1.8)
+            to_remove = noisy_mask
+            print(f"{BLUE}Iteration {iter}: Number of points to remove based on density statistics: {to_remove.sum().item()}{RESET}")
+            params, variables = remove_points(to_remove, params, params_opt_exclude, variables, optimizer)
+            
+            torch.cuda.empty_cache()
     return params, variables
 
 def densify(params, variables, optimizer, iter, densify_dict, params_opt_exclude, device="cuda"):
@@ -406,6 +442,7 @@ def densify(params, variables, optimizer, iter, densify_dict, params_opt_exclude
         variables = accumulate_mean2d_gradient(variables)
         grad_thresh = densify_dict['grad_thresh']
         if (iter >= densify_dict['start_after']) and (iter % densify_dict['densify_every'] == 0):
+            print("\nDensifying at iteration {}".format(iter))
             grads = variables['means2D_gradient_accum'] / variables['denom']
             grads[grads.isnan()] = 0.0
             to_clone = torch.logical_and(grads >= grad_thresh, (
@@ -464,6 +501,7 @@ def densify_v2(params, variables, optimizer, iter, densify_dict, params_opt_excl
         variables = accumulate_mean2d_gradient(variables)
         grad_thresh = densify_dict['grad_thresh']
         if (iter >= densify_dict['start_after']) and (iter % densify_dict['densify_every'] == 0):
+            print(f"{GREEN}\nDensifying at iteration {iter}{RESET}")
             grads = variables['means2D_gradient_accum'] / variables['denom']
             grads[grads.isnan()] = 0.0
             ######
@@ -477,33 +515,37 @@ def densify_v2(params, variables, optimizer, iter, densify_dict, params_opt_excl
             # to_keep_sem = masks[0] | masks[1]
             
             ######
+            # print("INitial params: \n")
+            # for k, v in params.items():
+            #     print(f"params[{k}].shape: {v.shape}")
+
             to_clone = torch.logical_and(grads >= grad_thresh, (
-                        torch.max(torch.exp(params['log_scales']), dim=1).values <= 0.01 * variables['scene_radius']))
+                        torch.max(torch.exp(params['log_scales']), dim=1).values <= 1e-3))#0.01 * variables['scene_radius']))
             # to_clone = torch.logical_and(to_clone, to_keep_sem) # only clone points with valid semantics # jrcv added. TESTING
+            # to_clone = 0*to_clone # fixing a bug. TODO: fix logic and remove
             print(f"Iteration {iter}: Number of points to clone: {to_clone.sum().item()}")
             if to_clone.sum() > 0:
                 
                 new_params = {k: v[to_clone] for k, v in params.items() if k not in ['cam_unnorm_rots', 'cam_trans']}
                 params = cat_params_to_optimizer(new_params, params, params_opt_exclude, optimizer)
-            
+                
             num_pts = params['means3D'].shape[0]
 
             padded_grad = torch.zeros(num_pts, device=device)
             padded_grad[:grads.shape[0]] = grads
             to_split = torch.logical_and(padded_grad >= grad_thresh,
-                                            torch.max(torch.exp(params['log_scales']), dim=1).values > 0.01 * variables[
-                                                'scene_radius'])
+                                            torch.max(torch.exp(params['log_scales']), dim=1).values > 2.5e-3) #0.01 * variables['scene_radius'])
             print(f"Iteration {iter}: Number of points to split: {to_split.sum().item()}")
-            to_split = 0*to_split # fixing a bug. TODO: fix logic and remove
-            if to_split.sum() > 0:
+            # to_split = 0*to_split # fixing a bug. TODO: fix logic and remove
+            if to_split.sum() > 2:
                 n = densify_dict['num_to_split_into']  # number to split into
                 new_params = {k: v[to_split].repeat(n, 1) for k, v in params.items() if k not in ['cam_unnorm_rots', 'cam_trans']}
                 stds = torch.exp(params['log_scales'])[to_split].repeat(n, 3)
                 means = torch.zeros((stds.size(0), 3), device=device)
                 samples = torch.normal(mean=means, std=stds)
                 rots = build_rotation(params['unnorm_rotations'][to_split], device=device).repeat(n, 1, 1)
-                new_params['means3D'] += torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1)
-                new_params['log_scales'] = torch.log(torch.exp(new_params['log_scales']) / (0.8 * n))
+                new_params['means3D'] += torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1).clip(-0.003,0.003) # adding a small clip to prevent outliers due to large splits. TODO: fix logic and remove
+                new_params['log_scales'] = torch.log(torch.exp(new_params['log_scales']) / (0.8 * n)) # scale down the new points
                 params = cat_params_to_optimizer(new_params, params, params_opt_exclude, optimizer)
             
             num_pts = params['means3D'].shape[0]
@@ -514,8 +556,8 @@ def densify_v2(params, variables, optimizer, iter, densify_dict, params_opt_excl
             variables['timestep'] = torch.zeros(num_pts, device=device) #jrcv added
             variables['seen'] = torch.zeros(num_pts, dtype=torch.bool, device=device) # jrcv added
             # variables['means2D'] = torch.zeros(num_pts, device=device) #jrcv added. Its wrong.
-
-            if to_split.sum() > 0:
+            print("\nVariables scene radius:", variables['scene_radius'])
+            if to_split.sum() > 2:
                 to_remove = torch.cat((to_split, torch.zeros(n * to_split.sum(), dtype=torch.bool, device=device)))
                 params, variables = remove_points(to_remove, params, params_opt_exclude, variables, optimizer)
 
@@ -526,14 +568,13 @@ def densify_v2(params, variables, optimizer, iter, densify_dict, params_opt_excl
             to_remove = (torch.sigmoid(params['logit_opacities']) < remove_threshold).squeeze()
             print(f"Iteration {iter}: Number of points to remove based on opacity: {to_remove.sum().item()}")
             if iter >= densify_dict['remove_big_after']:
-                big_points_ws = torch.exp(params['log_scales']).max(dim=1).values > 0.01 * variables['scene_radius']
+                big_points_ws = torch.exp(params['log_scales']).max(dim=1).values > 5e-3 #0.02 * variables['scene_radius']
                 print(f"Iteration {iter}: Number of big points to remove: {big_points_ws.sum().item()}")
                 to_remove = torch.logical_or(to_remove, big_points_ws)
                 print(f"Iteration {iter}: Total number of points to remove: {to_remove.sum().item()}")
             params, variables = remove_points(to_remove, params, params_opt_exclude, variables, optimizer)
 
             torch.cuda.empty_cache()
-
         # Reset Opacities for all Gaussians (This is not desired for mapping on only current frame)
         if iter > 0 and iter % densify_dict['reset_opacities_every'] == 0 and densify_dict['reset_opacities']:
             new_params = {'logit_opacities': inverse_sigmoid(torch.ones_like(params['logit_opacities']) * 0.01)}

@@ -164,10 +164,10 @@ def dbscan_clustering(points, eps_ = 0.02, min_samples = 50):
         centroid = cluster_points.mean(axis=0)
         centroids.append(centroid)
         number_points.append(cluster_points.shape[0])
-    print("Points per cluster:", number_points)
+    # print("Points per cluster:", number_points)
     number_points = np.array(number_points)
     valid_clusters = number_points > min_samples #just in case
-    print("Valid clusters:", valid_clusters)
+    # print("Valid clusters:", valid_clusters)
     
     centroids = np.array(centroids).astype(np.float32)
     valid_centroids = centroids[valid_clusters]

@@ -84,7 +84,7 @@ def get_pointcloud(color, depth, confidence_map, intrinsics, w2c, transform_pts=
     others_mask = ~sem_mask
 
     
-    downsample_mask(others_mask, down_factor=0.7) # donwsampling irrelevant semantics (remove down_factor%)
+    downsample_mask(others_mask, down_factor=0.3) # donwsampling irrelevant semantics (remove down_factor%)
     # downsample_mask(sem_mask, down_factor=0.3)
     
     
@@ -211,11 +211,11 @@ def initialize_params(init_pt_cld, num_frames, mean3_sq_dist, device, load_seman
         params_opt_exclude.add('semantic_ids')
         params_opt_exclude.add('opt_count')
         # channel =6 for semantic id
-        params['semantic_ids'] = init_pt_cld[:, 6]
+        params['semantic_ids'] = init_pt_cld[:, 6].view(-1, 1)
         # Channel 7-9 for semantic colors
         params['semantic_colors'] = init_pt_cld[:, 7:10]
-        params['rgb_loss'] = init_pt_cld[:, 10]
-        params['opt_count'] = init_pt_cld[:, 11]
+        params['rgb_loss'] = init_pt_cld[:, 10].view(-1, 1)
+        params['opt_count'] = init_pt_cld[:, 11].view(-1, 1)
         
 
     # Initialize a single gaussian trajectory to model the camera poses relative to the first frame
@@ -324,20 +324,20 @@ def initialize_first_timestep(dataset_0, num_frames, scene_radius_depth_ratio, m
     else:
         return params, variables, intrinsics, w2c, cam, params_opt_exclude
 
-def render_any_cam(params, w2c, height = 480, width = 640,device='cuda', intrinsics = None):
-    H = height
-    W = width
-    cx = W / 2
-    cy = H / 2
-    fov = 120*np.pi / 180
-    fx = W / (2 * np.tan(fov / 2))
-    fy = H / (2 * np.tan(fov / 2))
+def render_any_cam(params, w2c, height = 480, width = 640,device='cuda', intrinsics = None, render_all = False):
+    
     if intrinsics is None:
+        cx = width / 2
+        cy = height / 2
+        fov = 120*np.pi / 180
+        fx = width / (2 * np.tan(fov / 2))
+        fy = height / (2 * np.tan(fov / 2))
+        
         intrinsics = np.array([[fx, 0, cx],
                                 [0, fy, cy],
                                 [0, 0, 1]])
     
-    cam = setup_camera(W, H, intrinsics, np.eye(4), device=device)
+    cam = setup_camera(width, height, intrinsics, np.eye(4), device=device)
     
     w2c_tensor = torch.from_numpy(w2c).to(device).float()
     
@@ -349,18 +349,21 @@ def render_any_cam(params, w2c, height = 480, width = 640,device='cuda', intrins
     transformed_pts = (w2c_tensor @ pts4.T).T[:, :3]
 
     rendervar = transformed_params2rendervar(params, transformed_pts, device=device)
-    rgb, _, _, = Renderer(raster_settings=cam)(**rendervar)
-
-    rgb = rgb.permute(1, 2, 0).detach().cpu()
-    rgb = torch.clip(rgb, 0, 1)
-    rgb[rgb==0] = 1.0 # set background white
-    # plt.figure(1)
-
-    # plt.imshow(rgb)
-    # plt.title("Rendered RGB")
-    # print("render any cam disabled")
-    # plt.show()
-    return rgb
+    rgb_torch, _, _, = Renderer(raster_settings=cam)(**rendervar)
+    rgb_torch = torch.clip(rgb_torch, 0, 1) # use permute(1, 2, 0).detach().cpu().numpy() to visualize the rgb image
+    
+    if render_all == True:
+        depth_sil_rendervar = transformed_params2depthplussilhouette(params, None,transformed_pts, device=device)
+        semantic_rendervar = transformed_semantics2rendervar(params, transformed_pts, device=device)
+        depth_sil, _, _, = Renderer(raster_settings=cam)(**depth_sil_rendervar)
+        semantics, _, _, = Renderer(raster_settings=cam)(**semantic_rendervar)
+        depth_torch = depth_sil[0, :, :].unsqueeze(0)
+        silhouette_torch = depth_sil[1, :, :]
+        semantics_torch = torch.clip(semantics, 0, 1)
+        silhouette_torch = torch.clip(silhouette_torch, 0, 1)
+        return rgb_torch, depth_torch, semantics_torch, silhouette_torch
+   
+    return rgb_torch, None, None, None
 
 def render_cam(params, cam, iter_time_idx, device='cuda'):
     # Transform Centers and Unnorm Rots of Gaussians to Camera Frame
@@ -671,10 +674,10 @@ def initialize_new_params(new_pt_cld, mean3_sq_dist, device, load_semantics=Fals
     }
 
     if load_semantics:
-        params['semantic_ids'] = new_pt_cld[:, 6]
+        params['semantic_ids'] = new_pt_cld[:, 6].view(-1, 1)
         params['semantic_colors'] = new_pt_cld[:, 7:10]
-        params['rgb_loss'] = new_pt_cld[:, 10]
-        params['opt_count'] = new_pt_cld[:, 11]
+        params['rgb_loss'] = new_pt_cld[:, 10].view(-1, 1)
+        params['opt_count'] = new_pt_cld[:, 11].view(-1, 1)
 
 
     for k, v in params.items():

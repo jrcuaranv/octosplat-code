@@ -1101,15 +1101,15 @@ def eval_nvs(dataset, final_params, num_frames, eval_dir, sil_thres, mapping_ite
         wandb_run.log({"Eval/Metrics": fig})
     plt.close()
 
-def eval_single_frame(gt_rgb, gt_depth, gt_seg, rendered_rgb, rendered_depth, rendered_seg, device="cuda"):
+def eval_single_frame(gt_rgb, gt_depth, gt_seg, gt_confidence_map, rendered_rgb, rendered_depth, rendered_seg, device="cuda"):
     
-    valid_depth_mask = (gt_depth > 0)
+    valid_depth_mask = (gt_depth > 0) # this is actuall too noisy. Let's use the confidence map to mask out low confidence regions instead.
     rendered_depth = rendered_depth * valid_depth_mask
-    
+    valid_confidence_mask = (gt_confidence_map > 0.3)
     # Render RGB and Calculate PSNR, SSIM, LPIPS
     
-    weighted_rend_im = rendered_rgb * valid_depth_mask
-    weighted_gt_im = gt_rgb * valid_depth_mask
+    weighted_rend_im = rendered_rgb * valid_confidence_mask
+    weighted_gt_im = gt_rgb * valid_confidence_mask
     psnr = calc_psnr(weighted_rend_im, weighted_gt_im).mean()
     ssim = ms_ssim(weighted_rend_im.unsqueeze(0).cpu(), weighted_gt_im.unsqueeze(0).cpu(),
                     data_range=1.0, size_average=True)
@@ -1128,6 +1128,9 @@ def eval_single_frame(gt_rgb, gt_depth, gt_seg, rendered_rgb, rendered_depth, re
     depth_l1 = diff_depth_l1.sum() / valid_depth_mask.sum()
     
     # Compute metrics for semantics
+
+    gt_seg = gt_seg * valid_confidence_mask
+    rendered_seg = rendered_seg * valid_confidence_mask
     rendered_seg = recolor_semantic_img(rendered_seg, gt_seg)
     miou = evaluate_miou(rendered_seg, gt_seg)
     
