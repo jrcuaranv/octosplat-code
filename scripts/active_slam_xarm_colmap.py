@@ -1356,9 +1356,16 @@ class ActiveSLAM:
         # Reset Optimizer & Learning Rates for Full Map Optimization
         optimizer = initialize_optimizer(self.params, self.params_opt_exclude, self.config['mapping']['lrs'], tracking=False) 
         # Mapping
+        loss_weights=dict(
+            im=1.0, #1.0, #0.5
+            depth= 0.01, #0.5, #0.5, #0.25, #0.5,#1.0,
+            seg=0.1,#0.1
+            quality=0.1, #0.1,
+            depth_2 = 0.5,
+        )
         pruning_dict=dict( # Needs to be updated based on the number of mapping iterations
-            start_after=0,
-            remove_big_after=0,
+            start_after=1,
+            remove_big_after=1,
             stop_after=15000, #20,
             prune_every=500,
             removal_opacity_threshold=0.4,
@@ -1367,10 +1374,10 @@ class ActiveSLAM:
             reset_opacities_every=500, # Doesn't consider iter 0
         )
         densify_dict=dict( # Needs to be updated based on the number of mapping iterations
-            start_after=50, #500,
-            remove_big_after=1000,
+            start_after=1, #500,
+            remove_big_after=1,
             stop_after=15000,
-            densify_every= 500,#100,
+            densify_every= 100,#100,
             grad_thresh=0.00004,#0.00005,
             num_to_split_into=2,
             removal_opacity_threshold=0.4,
@@ -1400,7 +1407,7 @@ class ActiveSLAM:
             iter_data['semantic_color'] = self.keyframe_list[rand_idx]['semantic_color']
             # Loss for current frame
             visualization = False
-            loss, self.variables, losses = get_loss(self.params, iter_data, self.variables, iter_time_idx, self.config['mapping']['loss_weights'],
+            loss, self.variables, losses = get_loss(self.params, iter_data, self.variables, iter_time_idx, loss_weights,
                                             self.config['mapping']['use_sil_for_loss'], self.config['mapping']['sil_thres'],
                                             self.config['mapping']['use_l1'], self.config['mapping']['ignore_outlier_depth_loss'],
                                             mapping=True, device=self.device, plot_dir = self.eval_dir, load_semantics=True, visualization = visualization)

@@ -1103,9 +1103,14 @@ def eval_nvs(dataset, final_params, num_frames, eval_dir, sil_thres, mapping_ite
 
 def eval_single_frame(gt_rgb, gt_depth, gt_seg, gt_confidence_map, rendered_rgb, rendered_depth, rendered_seg, device="cuda"):
     
-    valid_depth_mask = (gt_depth > 0) # this is actuall too noisy. Let's use the confidence map to mask out low confidence regions instead.
+    # rgb and seg have shape (C, H, W)
+    background_color = torch.tensor([0, 0, 0],device=device, dtype=gt_seg.dtype)
+    background_mask = torch.all(gt_seg == background_color[:, None, None], dim=0)
+    
+    valid_confidence_mask = (gt_confidence_map > 0.3)*(~background_mask)
+    valid_depth_mask = (gt_depth > 0)*valid_confidence_mask
     rendered_depth = rendered_depth * valid_depth_mask
-    valid_confidence_mask = (gt_confidence_map > 0.3)
+    
     # Render RGB and Calculate PSNR, SSIM, LPIPS
     
     weighted_rend_im = rendered_rgb * valid_confidence_mask
@@ -1116,6 +1121,21 @@ def eval_single_frame(gt_rgb, gt_depth, gt_seg, gt_confidence_map, rendered_rgb,
     # loss_fn_alex.to(device)
     # lpips_score = loss_fn_alex(torch.clamp(weighted_rend_im.unsqueeze(0), 0.0, 1.0),
                                 # torch.clamp(weighted_gt_im.unsqueeze(0), 0.0, 1.0)).item()
+
+    # plotting gt_rgb, weighted_gt_im, and gt_seg side by side for debugging
+    # gt_rgb_np = gt_rgb.permute(1, 2, 0).cpu().numpy()
+    # weighted_gt_im_np = weighted_gt_im.permute(1, 2, 0).cpu().numpy()
+    # gt_seg_np = gt_seg.permute(1, 2, 0).cpu().numpy()
+    # fig, axs = plt.subplots(1, 3, figsize=(15, 5))
+    # axs[0].imshow(gt_rgb_np)
+    # axs[0].set_title("GT RGB")
+    # axs[1].imshow(weighted_gt_im_np)
+    # axs[1].set_title("Weighted GT RGB")
+    # axs[2].imshow(gt_seg_np)
+    # axs[2].set_title("GT Segmentation")
+    # plt.savefig("debug_gt_rgb.png")
+    # plt.close()
+    # input("Press enter to continue...")
 
     lpips_score = 0.0
     # Compute Depth Metrics: RMSE and L1

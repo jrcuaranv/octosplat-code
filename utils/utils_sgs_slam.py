@@ -84,7 +84,7 @@ def get_pointcloud(color, depth, confidence_map, intrinsics, w2c, transform_pts=
     others_mask = ~sem_mask
 
     
-    downsample_mask(others_mask, down_factor=0.3) # donwsampling irrelevant semantics (remove down_factor%)
+    # downsample_mask(others_mask, down_factor=0.1) # donwsampling irrelevant semantics (remove down_factor%)
     # downsample_mask(sem_mask, down_factor=0.3)
     
     
