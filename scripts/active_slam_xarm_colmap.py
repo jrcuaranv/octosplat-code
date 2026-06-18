@@ -336,7 +336,12 @@ class ActiveSLAM:
     def depth_message_to_array(self, data):
         """Convert depth message to numpy array"""
         try:
-            dtype = np.uint16 if data.encoding == '16UC1' else np.float64
+            if data.encoding == '16UC1':
+                dtype = np.uint16
+            elif data.encoding in ('32FC1', '32FC2'):
+                dtype = np.float32
+            else:
+                dtype = np.float64  # Default to float64 for other encodings
             depth_array = np.frombuffer(data.data, dtype=dtype).reshape(data.height, data.width)
             
             return depth_array
@@ -574,9 +579,10 @@ class ActiveSLAM:
 
         # confidence_map = np.ones_like(depth.squeeze()).astype(float) # just for testing
         confidence_map = cv2.imread(confidences_path, cv2.IMREAD_UNCHANGED) #(h,w), confidence in [0,255]
-        # valid_confidence_mask = (confidence_map > 0.2) & (confidence_map != 127)
+        # confidence_map[confidence_map == 127] = 63 # Chaning background confidence. TODO Remove. Just testing
         confidence_map = confidence_map.astype(float) / 255.0
         confidence_map = torch.from_numpy(confidence_map)
+        
 
         depth = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)/1000.0 # (h,w) in uint16 format, depth in mm
         if self.apply_depth_median_filter:

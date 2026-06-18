@@ -690,6 +690,59 @@ def initialize_new_params(new_pt_cld, mean3_sq_dist, device, load_semantics=Fals
 
     return params
 
+def fill_zeros_nearest(depth_map, max_iter=1000):
+    """
+    Replace zero values in a 2D depth map using nearest non-zero neighbors.
+
+    Args:
+        depth_map: (H, W) torch tensor
+        max_iter: maximum propagation iterations
+
+    Returns:
+        Filled depth map
+    """
+
+    depth = depth_map.clone()
+
+    # Mask of missing pixels
+    missing = depth == 0
+
+    # 4-neighborhood kernel
+    kernel = torch.tensor([
+        [0, 1, 0],
+        [1, 0, 1],
+        [0, 1, 0]
+    ], dtype=torch.float32, device=depth.device).view(1, 1, 3, 3)
+
+    depth = depth.unsqueeze(0).unsqueeze(0)  # (1,1,H,W)
+    missing = missing.unsqueeze(0).unsqueeze(0)
+
+    for _ in range(max_iter):
+
+        if not missing.any():
+            break
+
+        # Neighbor valid mask
+        valid = (~missing).float()
+
+        neighbor_count = F.conv2d(valid, kernel, padding=1)
+
+        # Sum neighboring depth values
+        neighbor_sum = F.conv2d(depth * valid, kernel, padding=1)
+
+        # Average neighboring values
+        avg_neighbor = neighbor_sum / (neighbor_count + 1e-6)
+
+        # Pixels that can now be filled
+        fillable = missing & (neighbor_count > 0)
+
+        # Fill them
+        depth[fillable] = avg_neighbor[fillable]
+
+        # Update mask
+        missing = depth == 0
+
+    return depth.squeeze(0).squeeze(0)
 
 def add_new_gaussians(params, params_opt_exclude, variables, curr_data, sil_thres, time_idx,
                       mean_sq_dist_method, device="cuda", load_semantics=False):
@@ -699,12 +752,21 @@ def add_new_gaussians(params, params_opt_exclude, variables, curr_data, sil_thre
     depth_sil_rendervar = transformed_params2depthplussilhouette(params, curr_data['w2c'],
                                                                  transformed_pts, device=device)
     
-    
+    fill_foreground_holes = False # added by jrcv
+            
     depth_sil, _, _, = Renderer(raster_settings=curr_data['cam'])(**depth_sil_rendervar)
     silhouette = depth_sil[1, :, :]
     non_presence_sil_mask = (silhouette < sil_thres)
-    # Check for new foreground objects by using GT depth
     gt_depth = curr_data['depth'][0, :, :]
+    
+    if fill_foreground_holes:
+        gt_seg = curr_data['semantic_color']
+        background_color = torch.tensor([0, 0, 0],device=device, dtype=gt_seg.dtype)
+        background_mask = torch.all(gt_seg == background_color[:, None, None], dim=0)
+        gt_depth_filled = fill_zeros_nearest(gt_depth, max_iter=1000)
+        gt_depth[~background_mask] = gt_depth_filled[~background_mask] # fill only relevant semantics (foreground)
+    
+    # Check for new foreground objects by using GT depth
     render_depth = depth_sil[0, :, :]
     depth_error = torch.abs(gt_depth - render_depth) * (gt_depth > 0)
     # print("Depth error median", depth_error.median())
@@ -764,7 +826,7 @@ def add_new_gaussians(params, params_opt_exclude, variables, curr_data, sil_thre
         curr_w2c = torch.eye(4).to(device).float()
         curr_w2c[:3, :3] = build_rotation(curr_cam_rot)
         curr_w2c[:3, 3] = curr_cam_tran
-        valid_depth_mask = (curr_data['depth'][0, :, :] > 0)
+        valid_depth_mask = gt_depth > 0 #(curr_data['depth'][0, :, :] > 0)
         non_presence_mask = non_presence_mask & valid_depth_mask.reshape(-1)
 
         if load_semantics:
@@ -775,7 +837,7 @@ def add_new_gaussians(params, params_opt_exclude, variables, curr_data, sil_thre
             semantic_id = None
             semantic_color = None
 
-        new_pt_cld, mean3_sq_dist = get_pointcloud(curr_data['im'], curr_data['depth'], curr_data['confidence_map'],curr_data['intrinsics'],
+        new_pt_cld, mean3_sq_dist = get_pointcloud(curr_data['im'], gt_depth.unsqueeze(0), curr_data['confidence_map'],curr_data['intrinsics'],
                                                    curr_w2c, mask=non_presence_mask, compute_mean_sq_dist=True,
                                                    mean_sq_dist_method=mean_sq_dist_method, device=device,
                                                    load_semantics=load_semantics, semantic_id=semantic_id,
