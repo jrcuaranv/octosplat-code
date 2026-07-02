@@ -1105,12 +1105,21 @@ def eval_single_frame(gt_rgb, gt_depth, gt_seg, gt_confidence_map, rendered_rgb,
     
     # rgb and seg have shape (C, H, W)
     background_color = torch.tensor([0, 0, 0],device=device, dtype=gt_seg.dtype)
+    fruit_color = torch.tensor([1, 0, 0],device=device, dtype=gt_seg.dtype)
+
     background_mask = torch.all(gt_seg == background_color[:, None, None], dim=0)
+    fruit_mask = torch.all(gt_seg == fruit_color[:, None, None], dim=0)
+
     
-    valid_confidence_mask = (gt_confidence_map > 0.3)*(~background_mask)
+    valid_confidence_mask = (gt_confidence_map > 0.4)*(~background_mask)*fruit_mask
+    valid_confidence_mask[rendered_depth[0]==0] = 0 # also mask out pixels where rendered depth is 0 (no surface rendered)
     valid_depth_mask = (gt_depth > 0)*valid_confidence_mask
     rendered_depth = rendered_depth * valid_depth_mask
-    
+    nan = float('nan')
+
+    if valid_confidence_mask.sum() == 0:
+        print("No valid pixels for evaluation based on confidence map. Returning NaN for all metrics.")
+        return nan, nan, nan, nan, nan, nan
     # Render RGB and Calculate PSNR, SSIM, LPIPS
     
     weighted_rend_im = rendered_rgb * valid_confidence_mask
@@ -1139,13 +1148,17 @@ def eval_single_frame(gt_rgb, gt_depth, gt_seg, gt_confidence_map, rendered_rgb,
 
     lpips_score = 0.0
     # Compute Depth Metrics: RMSE and L1
-    
-    diff_depth_rmse = torch.sqrt((((rendered_depth - gt_depth)) ** 2))
-    diff_depth_rmse = diff_depth_rmse * valid_depth_mask
-    rmse = diff_depth_rmse.sum() / valid_depth_mask.sum()
-    diff_depth_l1 = torch.abs((rendered_depth - gt_depth))
-    diff_depth_l1 = diff_depth_l1 * valid_depth_mask
-    depth_l1 = diff_depth_l1.sum() / valid_depth_mask.sum()
+    n_depth = valid_depth_mask.sum()
+    if n_depth == 0:
+        rmse = nan
+        depth_l1 = nan
+    else:
+        diff_sq = torch.sqrt((((rendered_depth - gt_depth)) ** 2))
+        diff_sq = diff_sq * valid_depth_mask
+        rmse = torch.sqrt(diff_sq.sum() / valid_depth_mask.sum()).item()
+        diff_depth_l1 = torch.abs((rendered_depth - gt_depth))
+        diff_depth_l1 = diff_depth_l1 * valid_depth_mask
+        depth_l1 = (diff_depth_l1.sum() / valid_depth_mask.sum()).item()
     
     # Compute metrics for semantics
 
@@ -1155,8 +1168,23 @@ def eval_single_frame(gt_rgb, gt_depth, gt_seg, gt_confidence_map, rendered_rgb,
     miou = evaluate_miou(rendered_seg, gt_seg)
     
 
-    return psnr.detach().cpu().numpy(), ssim.detach().cpu().numpy(), lpips_score, rmse.detach().cpu().numpy(), depth_l1.detach().cpu().numpy(), miou
+    return psnr.detach().cpu().item(), ssim.detach().cpu().item(), lpips_score, rmse, depth_l1, miou
 
-        
+def depth_colormap(img, cmap='jet', color_bar = True):
+    
+    W, H = img.shape[:2]
+    dpi = 300
+    fig, ax = plt.subplots(1, figsize=(H/dpi, W/dpi), dpi=dpi)
+    im = ax.imshow(img, cmap=cmap)
+    ax.set_axis_off()
+    if color_bar:
+        fig.colorbar(im, ax=ax)
+    fig.tight_layout()
+    fig.canvas.draw()
+    data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+    data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+    img = torch.from_numpy(data / 255.).float().permute(2,0,1)
+    plt.close()
+    return img
     
     

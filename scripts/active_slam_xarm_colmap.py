@@ -46,6 +46,7 @@ from gazebo_msgs.msg import LinkState, LinkStates
 from geometry_msgs.msg import Pose, Twist, Point, Quaternion
 import geometry_msgs.msg
 from sensor_msgs.msg import Image, CompressedImage
+from PIL import Image as PILImage
 from std_msgs.msg import Float32
 from cv_bridge import CvBridge, CvBridgeError
 import tf2_ros
@@ -83,7 +84,7 @@ from utils.common_utils import seed_everything, save_params_ckpt, save_params
 # from utils.eval_helpers import report_progress
 from utils.keyframe_selection import keyframe_selection_overlap
 from utils.recon_helpers import setup_camera
-from utils.eval_helpers import eval_single_frame
+from utils.eval_helpers import eval_single_frame, depth_colormap
 from utils.slam_helpers import (
     get_c2w_from_params,transformed_params2rendervar, filter_points_in_image, transformed_params2depth_silhouette_rgbloss, transformed_entropy2rendervar, transformed_params2depthplussilhouette,
     transformed_semantics2rendervar, transformed_rgb_loss_rendervar, transform_to_frame, transform_points_to_frame, l1_loss_v1, matrix_to_quaternion
@@ -113,7 +114,7 @@ def create_pointcloud2(points, frame_id="map"):
     return pc2.create_cloud(header, fields, points)
 
 class ActiveSLAM:
-    def __init__(self, config):
+    def __init__(self, config, alternative_colmap_dataset=None):
         
         rospy.init_node('active_slam', anonymous=True)
         self.config = config
@@ -127,9 +128,33 @@ class ActiveSLAM:
 
         
         prefix = config['active_mapping']['data_mode']
+        self.episode_suffix = ""
+            
         if prefix == 'colmap_dataset':
             self.running_colmap_dataset = True
             self.colmap_scene_path = self.config['active_mapping'][prefix]['colmap_scene_path']
+            if self.colmap_scene_path is None:
+                self.colmap_scene_path = alternative_colmap_dataset
+            if self.colmap_scene_path is None:
+                raise ValueError("Colmap scene path is not provided. Please provide it in the config file or as a command line argument.")
+            if self.colmap_scene_path.endswith("/"):
+                self.colmap_scene_path = self.colmap_scene_path[:-1]
+            self.test_data_path = os.path.join(self.colmap_scene_path, "eval_data")
+            if not os.path.exists(self.test_data_path):
+                print("Colmap scene path:", self.colmap_scene_path)
+                colmap_scene_name = os.path.basename(self.colmap_scene_path)
+                greenhouse_id = colmap_scene_name.split('_g')[-1].split('_row')[0]
+                row_id = colmap_scene_name.split('_row')[-1]
+                print("Colmap scene name:", colmap_scene_name)
+                print("Greenhouse ID:", greenhouse_id)
+                print("Row ID:", row_id)
+                self.episode_suffix = f"_g{greenhouse_id}_row{row_id}"
+                # ubuntu 20 laptop
+                # self.test_data_path = os.path.join('/mnt/ssd2T/datasets/gaussian_splat_data/active_mapping_evaluation_2026/eval_data_folders', f"greenhouse_{greenhouse_id}", f"row_{row_id}")
+                # jetson orin
+                self.test_data_path = os.path.join('/mnt/ssd1T/active_mapping_evaluation_2026/eval_data_folders', f"greenhouse_{greenhouse_id}", f"row_{row_id}")
+            print("Colmap scene path:", self.colmap_scene_path)
+            print("Test data path:", self.test_data_path)
             self.train_files, self.test_files = self.split_colmap_dataset()
             self.intrinsics = np.loadtxt(os.path.join(self.colmap_scene_path, "intrinsics.txt"))
             self.fx, self.fy, self.cx, self.cy = self.intrinsics[0, 0], self.intrinsics[1, 1], self.intrinsics[0, 2], self.intrinsics[1, 2]
@@ -199,8 +224,8 @@ class ActiveSLAM:
 
         if self.running_colmap_dataset == True:
             self.new_rgbd_slam_session = True
-        
-        while not rospy.is_shutdown():
+        self.terminate_process = False
+        while not rospy.is_shutdown() and not self.terminate_process:
             rate.sleep()
             if self.new_rgbd_slam_session:
                 time.sleep(5.0) # wait for any ongoing process to finish
@@ -208,6 +233,7 @@ class ActiveSLAM:
                 self.rgbd_slam(self.config, self.params_file_prefix)
             
             print("Running...")
+        return 0
             
     def init_variables(self):
         self.bgr_image = None
@@ -249,6 +275,7 @@ class ActiveSLAM:
         self.full_optimization_requested = False
         self.episode_dir = None
         self.offline_sample_idx = 0
+        
 
     def save_params_callback(self, req):
         rospy.loginfo("Saving parameters...")
@@ -512,6 +539,20 @@ class ActiveSLAM:
         return return_data
     
     def split_colmap_dataset(self):
+        
+        if os.path.isdir(self.test_data_path):
+            print("Eval data directory already exists. Assuming dataset is already split.")
+            train_image_dir = os.path.join(self.colmap_scene_path, "images")
+            train_image_files = sorted(os.listdir(train_image_dir))
+            random.shuffle(train_image_files) # to get random samples from the dataset, rather than sequential ones
+            test_image_dir = os.path.join(self.test_data_path, "images")
+            test_image_files = sorted(os.listdir(test_image_dir))
+            print("Number of training files:", len(train_image_files))
+            print("Number of test files:", len(test_image_files))
+            return train_image_files, test_image_files
+        
+        # splitting data
+        self.test_data_path = self.colmap_scene_path # same as train data path
         image_dir = os.path.join(self.colmap_scene_path, "images")
         image_files = sorted(os.listdir(image_dir))
         random.shuffle(image_files) # to get random samples from the dataset, rather than sequential ones
@@ -523,13 +564,16 @@ class ActiveSLAM:
         print("Number of test files:", len(test_files))
         return train_files, test_files
     
-    def get_colmap_sample_data(self, file_name, dtype = torch.float):
-        image_dir = os.path.join(self.colmap_scene_path, "images") # contains both train and test images
-        
-        semantics_dir = os.path.join(self.colmap_scene_path, "semantics")
-        confidences_dir = os.path.join(self.colmap_scene_path, "confidences")
-        depth_dir = os.path.join(self.colmap_scene_path, "depth")
-        pose_dir = os.path.join(self.colmap_scene_path, "poses")
+    def get_colmap_sample_data(self, file_name, dtype = torch.float, eval = False):
+        if eval:
+            data_path = self.test_data_path
+        else:
+            data_path = self.colmap_scene_path
+        image_dir = os.path.join(data_path, "images") # contains both train and test images
+        semantics_dir = os.path.join(data_path, "semantics")
+        confidences_dir = os.path.join(data_path, "confidences")
+        depth_dir = os.path.join(data_path, "depth")
+        pose_dir = os.path.join(data_path, "poses")
         image_files = sorted(os.listdir(image_dir))
         
         rgb_path = os.path.join(image_dir, file_name)
@@ -636,7 +680,7 @@ class ActiveSLAM:
 
         # Create Output Directories
         timestamp_str = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-        self.episode_dir = os.path.join(self.output_directory, f"{timestamp_str}_sgs_output")
+        self.episode_dir = os.path.join(self.output_directory, f"{timestamp_str}_sgs_output{self.episode_suffix}")
         os.makedirs(self.episode_dir, exist_ok=True)
         # output_dir = os.path.join(config["workdir"], config["run_name"])
         output_dir = self.episode_dir
@@ -687,11 +731,11 @@ class ActiveSLAM:
                 seperate_tracking_res = False
         
         load_semantics = True
-        num_frames = dataset_config["num_frames"]
+        num_frames = min(dataset_config["num_frames"], len(self.train_files) if self.running_colmap_dataset else float('inf'))
         
         
-        valid_depth = False
-        while valid_depth == False:
+        valid_data = False
+        while valid_data == False:
             self.pub_gs_status.publish(Float32(1.0))    
             while (self.new_image_data == None):
                 print("waiting for first sample image")
@@ -704,12 +748,10 @@ class ActiveSLAM:
                 time.sleep(0.5)
             dataset_0 = self.get_sample_data()
             _, depth_sample, _, _, _, _, _ = dataset_0
-            valid_depth = depth_sample.sum().item() > 0
-            if (valid_depth == False):
-                print("No valid depth map")
-                plt.figure(1)
-                plt.imshow(self.depth_image)
-                plt.show()
+            valid_data = depth_sample.sum().item() > 0 and dataset_0 is not None
+            if (valid_data == False):
+                print("No valid sample data...")
+                
         self.params, self.variables, self.intrinsics, self.first_frame_w2c, self.cam, \
             self.params_opt_exclude = initialize_first_timestep(dataset_0, num_frames, config['scene_radius_depth_ratio'],
                                                         config['mean_sq_dist_method'], device=self.device,
@@ -763,8 +805,8 @@ class ActiveSLAM:
             
             if time_idx>0:
                 # self.pub_gs_status.publish(Float32(1.0))
-                valid_depth = False
-                while valid_depth == False:
+                valid_data = False
+                while valid_data == False:
                     self.pub_gs_status.publish(Float32(1.0))
 
                     while (self.new_image_data == None):
@@ -774,7 +816,12 @@ class ActiveSLAM:
                             print("New RGBD SLAM session triggered. Exiting current SLAM session.")
                             return
                         while time_idx == num_frames - 1:
+                            self.save_params_callback(None)
                             print(f"Checkpoint reached at time idx {time_idx}. Pausing SLAM session for inspection.")
+                            # input("Press Enter to continue...")
+                            self.terminate_process = True
+                            return
+                            
                             time.sleep(5.0)
                         
                         if self.running_colmap_dataset == True:
@@ -789,10 +836,11 @@ class ActiveSLAM:
                         #     self.full_map_optimization()
                         #     self.full_optimization_requested = False
                             
-                    color, depth, _, gt_pose, semantic_id, semantic_color, confidence_map = self.get_sample_data()
-                    valid_depth = depth.sum().item() > 0
-                    if (valid_depth == False):
-                        print("No valid depth map")
+                    sample_data = self.get_sample_data()
+                    color, depth, _, gt_pose, semantic_id, semantic_color, confidence_map = sample_data
+                    valid_data = depth.sum().item() > 0 and sample_data is not None
+                    if (valid_data is None):
+                        print("No valid sample data...")
                 sem_target = torch.tensor([1.0,0,0]).to(self.device) #red
                 rmse = torch.linalg.norm(sem_target - self.params['semantic_colors'].clip(0,1), axis=1)/math.sqrt(3)
                 # cos_similarity = F.cosine_similarity(sem_target, self.params['semantic_colors'],dim=1)
@@ -1463,7 +1511,7 @@ class ActiveSLAM:
             curr_time_idx = self.keyframe_list[frame_idx]['id']
             gt_color_torch = self.keyframe_list[frame_idx]['color']
             gt_semantics_torch = self.keyframe_list[frame_idx]['semantic_color']
-            gt_depth_torch = self.keyframe_list[frame_idx]['depth'].squeeze().float()
+            gt_depth_torch = self.keyframe_list[frame_idx]['depth'].float()
             gt_confidence_map_torch = self.keyframe_list[frame_idx]['confidence_map']
             rendered_color_torch, rendered_depth_torch, rendered_semantics_torch, rendered_silhouette_torch = render_cam(self.params, self.cam, curr_time_idx)
             
@@ -1476,55 +1524,72 @@ class ActiveSLAM:
             depth_l1_list.append(depth_l1)
             miou_list.append(miou)
 
-            gt_color_torch = gt_color_torch.permute(1,2,0).float()
-            gt_color_numpy  = (gt_color_torch.detach().cpu().numpy() * 255).astype(np.uint8)
-            gt_semantics_torch = gt_semantics_torch.permute(1,2,0).float()
-            gt_semantics_numpy  = (gt_semantics_torch.detach().cpu().numpy() * 255).astype(np.uint8)
-            gt_depth_numpy = gt_depth_torch.detach().cpu().numpy()
-            
-            rendered_color_numpy  = (rendered_color_torch.permute(1, 2, 0).detach().cpu().numpy() * 255).astype(np.uint8)
-            rendered_depth_numpy = rendered_depth_torch.squeeze().detach().cpu().numpy()
-            rendered_semantics_numpy = (rendered_semantics_torch.permute(1, 2, 0).detach().cpu().numpy() * 255).astype(np.uint8)
-            rendered_silhouette_numpy = rendered_silhouette_torch.detach().cpu().numpy()
+            if frame_idx % 10 == 0:
+                gt_color_torch = gt_color_torch.permute(1,2,0).float()
+                gt_color_numpy  = (gt_color_torch.detach().cpu().numpy() * 255).astype(np.uint8)
+                gt_semantics_torch = gt_semantics_torch.permute(1,2,0).float()
+                gt_semantics_numpy  = (gt_semantics_torch.detach().cpu().numpy() * 255).astype(np.uint8)
+                gt_depth_numpy = gt_depth_torch.detach().cpu().numpy()
+                
+                rendered_color_numpy  = (rendered_color_torch.permute(1, 2, 0).detach().cpu().numpy() * 255).astype(np.uint8)
+                rendered_depth_numpy = rendered_depth_torch.squeeze().detach().cpu().numpy()
+                rendered_semantics_numpy = (rendered_semantics_torch.permute(1, 2, 0).detach().cpu().numpy() * 255).astype(np.uint8)
+                rendered_silhouette_numpy = rendered_silhouette_torch.detach().cpu().numpy()
 
-            valid_mask = rendered_silhouette_numpy > 0.9
-            rendered_color_numpy[~valid_mask] = 0
-            rendered_depth_numpy[~valid_mask] = 0
-            rendered_semantics_numpy[~valid_mask] = 0
+                valid_mask = rendered_silhouette_numpy > 0.9
+                rendered_color_numpy[~valid_mask] = 0
+                rendered_depth_numpy[~valid_mask] = 0
+                rendered_semantics_numpy[~valid_mask] = 0
 
-            c2w_torch = get_c2w_from_params(self.params, curr_time_idx)
-            c2w_numpy = c2w_torch.detach().cpu().numpy()
-            np.savetxt(os.path.join(images_dir, f"frame_{curr_time_idx}_pose.txt"), c2w_numpy)
+                c2w_torch = get_c2w_from_params(self.params, curr_time_idx)
+                c2w_numpy = c2w_torch.detach().cpu().numpy()
+                np.savetxt(os.path.join(images_dir, f"frame_{curr_time_idx}_pose.txt"), c2w_numpy)
 
-            # converting depth maps to colorable depth maps for visualization
-            depth_min = 0
-            depth_max = 2
-            depth_range = depth_max - depth_min
-            gt_depth_vis = (gt_depth_numpy - depth_min) / depth_range * 255
-            gt_depth_vis = gt_depth_vis.astype(np.uint8)
-            gt_depth_vis_color = cv2.applyColorMap(gt_depth_vis, cv2.COLORMAP_JET)
-            rendered_depth_vis = (rendered_depth_numpy - depth_min) / depth_range * 255
-            rendered_depth_vis = rendered_depth_vis.astype(np.uint8)
-            rendered_depth_vis_color = cv2.applyColorMap(rendered_depth_vis, cv2.COLORMAP_JET)
+                # converting depth maps to colorable depth maps for visualization
+                # depth_min = 0
+                # depth_max = 2
+                # depth_range = depth_max - depth_min
+                # gt_depth_vis = (gt_depth_numpy - depth_min) / depth_range * 255
+                # gt_depth_vis = gt_depth_vis.astype(np.uint8)
+                # gt_depth_vis_color = cv2.applyColorMap(gt_depth_vis, cv2.COLORMAP_JET)
+                # rendered_depth_vis = (rendered_depth_numpy - depth_min) / depth_range * 255
+                # rendered_depth_vis = rendered_depth_vis.astype(np.uint8)
+                # rendered_depth_vis_color = cv2.applyColorMap(rendered_depth_vis, cv2.COLORMAP_JET)
 
-            rendered_silhouette_vis = (rendered_silhouette_numpy * 255).astype(np.uint8)
-            rendered_silhouette_vis_color = cv2.applyColorMap(rendered_silhouette_vis, cv2.COLORMAP_JET)
+                gt_depth = torch.clamp(gt_depth_torch, 0.0, self.max_depth)
+                gt_depth[0, 0] = self.max_depth # to ensure the colormap is scaled correctly from min depth to max depth
+                gt_depth[0, 1] = 0.0
+                gt_depth_vis = depth_colormap((gt_depth / self.max_depth).detach().cpu().numpy()[0], cmap='turbo', color_bar=False)
+                gt_depth_vis_color = (gt_depth_vis.clamp(0.0, 1.0).permute(1, 2, 0).cpu().numpy()*255).astype(np.uint8)
+                gt_depth_vis_color = PILImage.fromarray(gt_depth_vis_color)
 
-            
-            # Save GT and Rendered Images
-            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_color_gt.png"), cv2.cvtColor(gt_color_numpy, cv2.COLOR_RGB2BGR))
-            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_depth_gt.png"), gt_depth_vis_color)
-            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_semantics_gt.png"), cv2.cvtColor(gt_semantics_numpy, cv2.COLOR_RGB2BGR))
-            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_color_rendered.png"), cv2.cvtColor(rendered_color_numpy, cv2.COLOR_RGB2BGR))
-            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_depth_rendered.png"), rendered_depth_vis_color)
-            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_semantics_rendered.png"), cv2.cvtColor(rendered_semantics_numpy, cv2.COLOR_RGB2BGR))
-            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_silhouette_rendered.png"), rendered_silhouette_vis_color)
-        mean_psnr = np.mean(psnr_list)
-        mean_ssim = np.mean(ssmi_list)
-        mean_lpips = np.mean(lpips_list)
-        mean_rmse = np.mean(rmse_list)
-        mean_depth_l1 = np.mean(depth_l1_list)
-        mean_miou = np.mean(miou_list)
+                rendered_depth = torch.clamp(rendered_depth_torch, 0.0, self.max_depth)
+                rendered_depth[0, 0] = self.max_depth # to ensure the colormap is scaled correctly from min depth to max depth
+                rendered_depth[0, 1] = 0.0
+                rendered_depth_vis = depth_colormap((rendered_depth / self.max_depth).detach().cpu().numpy()[0], cmap='turbo', color_bar=False)
+                rendered_depth_vis_color = (rendered_depth_vis.clamp(0.0, 1.0).permute(1, 2, 0).cpu().numpy()*255).astype(np.uint8)
+                rendered_depth_vis_color = PILImage.fromarray(rendered_depth_vis_color)
+
+                rendered_silhouette_vis = (rendered_silhouette_numpy * 255).astype(np.uint8)
+                rendered_silhouette_vis_color = cv2.applyColorMap(rendered_silhouette_vis, cv2.COLORMAP_JET)
+
+                
+                # Save GT and Rendered Images
+                cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_color_gt.png"), cv2.cvtColor(gt_color_numpy, cv2.COLOR_RGB2BGR))
+                # cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_depth_gt.png"), gt_depth_vis_color)
+                gt_depth_vis_color.save(os.path.join(images_dir, f"frame_{curr_time_idx}_depth_gt.png"))
+                cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_semantics_gt.png"), cv2.cvtColor(gt_semantics_numpy, cv2.COLOR_RGB2BGR))
+                cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_color_rendered.png"), cv2.cvtColor(rendered_color_numpy, cv2.COLOR_RGB2BGR))
+                # cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_depth_rendered.png"), rendered_depth_vis_color)
+                rendered_depth_vis_color.save(os.path.join(images_dir, f"frame_{curr_time_idx}_depth_rendered.png"))
+                cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_semantics_rendered.png"), cv2.cvtColor(rendered_semantics_numpy, cv2.COLOR_RGB2BGR))
+                cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_silhouette_rendered.png"), rendered_silhouette_vis_color)
+        mean_psnr = np.nanmean(psnr_list)
+        mean_ssim = np.nanmean(ssmi_list)
+        mean_lpips = np.nanmean(lpips_list)
+        mean_rmse = np.nanmean(rmse_list)
+        mean_depth_l1 = np.nanmean(depth_l1_list)
+        mean_miou = np.nanmean(miou_list)
         metrics_output_path = os.path.join(self.episode_dir, timestamp_str+"_evaluation_metrics.txt")
         with open(metrics_output_path, 'w') as f:
             f.write(f"Training Evaluation Metrics\n")
@@ -1558,13 +1623,13 @@ class ActiveSLAM:
         curr_time_idx = 0
 
         for file_name in self.test_files:
-            sample_data = self.get_colmap_sample_data(file_name)
+            sample_data = self.get_colmap_sample_data(file_name, eval=True)
             if sample_data is None:
                 continue
             gt_color_torch, gt_depth_torch, intrinsics, c2w_torch, _, gt_semantics_torch, gt_confidence_map_torch = sample_data
             gt_color_torch = gt_color_torch.permute(2,0,1)/255
             gt_semantics_torch = gt_semantics_torch.permute(2,0,1)/255
-            gt_depth_torch = gt_depth_torch.permute(2,0,1).squeeze().float()
+            gt_depth_torch = gt_depth_torch.permute(2,0,1).float()
 
             height, width = gt_color_torch.shape[1], gt_color_torch.shape[2]
             w2c_torch = torch.linalg.inv(c2w_torch)
@@ -1581,55 +1646,72 @@ class ActiveSLAM:
             depth_l1_list.append(depth_l1)
             miou_list.append(miou)
 
-            gt_color_torch = gt_color_torch.permute(1,2,0).float()
-            gt_color_numpy  = (gt_color_torch.detach().cpu().numpy() * 255).astype(np.uint8)
-            gt_semantics_torch = gt_semantics_torch.permute(1,2,0).float()
-            gt_semantics_numpy  = (gt_semantics_torch.detach().cpu().numpy() * 255).astype(np.uint8)
-            gt_depth_numpy = gt_depth_torch.detach().cpu().numpy()
-            
-            rendered_color_numpy  = (rendered_color_torch.permute(1, 2, 0).detach().cpu().numpy() * 255).astype(np.uint8)
-            rendered_depth_numpy = rendered_depth_torch.squeeze().detach().cpu().numpy()
-            rendered_semantics_numpy = (rendered_semantics_torch.permute(1, 2, 0).detach().cpu().numpy() * 255).astype(np.uint8)
-            rendered_silhouette_numpy = rendered_silhouette_torch.detach().cpu().numpy()
+            if curr_time_idx % 10 == 0:
 
-            valid_mask = rendered_silhouette_numpy > 0.2 #0.9
-            rendered_color_numpy[~valid_mask] = 0
-            rendered_depth_numpy[~valid_mask] = 0
-            rendered_semantics_numpy[~valid_mask] = 0
+                gt_color_torch = gt_color_torch.permute(1,2,0).float()
+                gt_color_numpy  = (gt_color_torch.detach().cpu().numpy() * 255).astype(np.uint8)
+                gt_semantics_torch = gt_semantics_torch.permute(1,2,0).float()
+                gt_semantics_numpy  = (gt_semantics_torch.detach().cpu().numpy() * 255).astype(np.uint8)
+                gt_depth_numpy = gt_depth_torch.detach().cpu().numpy()
+                
+                rendered_color_numpy  = (rendered_color_torch.permute(1, 2, 0).detach().cpu().numpy() * 255).astype(np.uint8)
+                rendered_depth_numpy = rendered_depth_torch.squeeze().detach().cpu().numpy()
+                rendered_semantics_numpy = (rendered_semantics_torch.permute(1, 2, 0).detach().cpu().numpy() * 255).astype(np.uint8)
+                rendered_silhouette_numpy = rendered_silhouette_torch.detach().cpu().numpy()
 
-            c2w_numpy = c2w_torch.detach().cpu().numpy()
-            np.savetxt(os.path.join(images_dir, f"frame_{curr_time_idx}_pose.txt"), c2w_numpy)
+                valid_mask = rendered_silhouette_numpy > 0.2 #0.9
+                # rendered_color_numpy[~valid_mask] = 0
+                rendered_depth_numpy[~valid_mask] = 0
+                rendered_semantics_numpy[~valid_mask] = 0
 
-            # converting depth maps to colorable depth maps for visualization
-            depth_min = 0
-            depth_max = 2
-            depth_range = depth_max - depth_min
-            gt_depth_vis = (gt_depth_numpy - depth_min) / depth_range * 255
-            gt_depth_vis = gt_depth_vis.astype(np.uint8)
-            gt_depth_vis_color = cv2.applyColorMap(gt_depth_vis, cv2.COLORMAP_JET)
-            rendered_depth_vis = (rendered_depth_numpy - depth_min) / depth_range * 255
-            rendered_depth_vis = rendered_depth_vis.astype(np.uint8)
-            rendered_depth_vis_color = cv2.applyColorMap(rendered_depth_vis, cv2.COLORMAP_JET)
+                c2w_numpy = c2w_torch.detach().cpu().numpy()
+                np.savetxt(os.path.join(images_dir, f"{file_name}_pose.txt"), c2w_numpy)
 
-            rendered_silhouette_vis = (rendered_silhouette_numpy * 255).astype(np.uint8)
-            rendered_silhouette_vis_color = cv2.applyColorMap(rendered_silhouette_vis, cv2.COLORMAP_JET)
+                # converting depth maps to colorable depth maps for visualization
+                # depth_min = 0
+                # depth_max = self.max_depth
+                # depth_range = depth_max - depth_min
+                # gt_depth_vis = (gt_depth_numpy - depth_min) / depth_range * 255
+                # gt_depth_vis = gt_depth_vis.astype(np.uint8)
+                # gt_depth_vis_color = cv2.applyColorMap(gt_depth_vis, cv2.COLORMAP_JET)
+                # rendered_depth_vis = (rendered_depth_numpy - depth_min) / depth_range * 255
+                # rendered_depth_vis = rendered_depth_vis.astype(np.uint8)
+                # rendered_depth_vis_color = cv2.applyColorMap(rendered_depth_vis, cv2.COLORMAP_JET)
+                gt_depth = torch.clamp(gt_depth_torch, 0.0, self.max_depth)
+                gt_depth[0, 0] = self.max_depth # to ensure the colormap is scaled correctly from min depth to max depth
+                gt_depth[0, 1] = 0.0
+                gt_depth_vis = depth_colormap((gt_depth / self.max_depth).detach().cpu().numpy()[0], cmap='turbo', color_bar=False)
+                gt_depth_vis_color = (gt_depth_vis.clamp(0.0, 1.0).permute(1, 2, 0).cpu().numpy()*255).astype(np.uint8)
+                gt_depth_vis_color = PILImage.fromarray(gt_depth_vis_color)
 
-            
-            # Save GT and Rendered Images
-            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_color_gt.png"), cv2.cvtColor(gt_color_numpy, cv2.COLOR_RGB2BGR))
-            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_depth_gt.png"), gt_depth_vis_color)
-            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_semantics_gt.png"), cv2.cvtColor(gt_semantics_numpy, cv2.COLOR_RGB2BGR))
-            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_color_rendered.png"), cv2.cvtColor(rendered_color_numpy, cv2.COLOR_RGB2BGR))
-            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_depth_rendered.png"), rendered_depth_vis_color)
-            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_semantics_rendered.png"), cv2.cvtColor(rendered_semantics_numpy, cv2.COLOR_RGB2BGR))
-            cv2.imwrite(os.path.join(images_dir, f"frame_{curr_time_idx}_silhouette_rendered.png"), rendered_silhouette_vis_color)
+                rendered_depth = torch.clamp(rendered_depth_torch, 0.0, self.max_depth)
+                rendered_depth[0, 0] = self.max_depth # to ensure the colormap is scaled correctly from min depth to max depth
+                rendered_depth[0, 1] = 0.0
+                rendered_depth_vis = depth_colormap((rendered_depth / self.max_depth).detach().cpu().numpy()[0], cmap='turbo', color_bar=False)
+                rendered_depth_vis_color = (rendered_depth_vis.clamp(0.0, 1.0).permute(1, 2, 0).cpu().numpy()*255).astype(np.uint8)
+                rendered_depth_vis_color = PILImage.fromarray(rendered_depth_vis_color)
+
+                rendered_silhouette_vis = (rendered_silhouette_numpy * 255).astype(np.uint8)
+                rendered_silhouette_vis_color = cv2.applyColorMap(rendered_silhouette_vis, cv2.COLORMAP_JET)
+
+                file_prefix = file_name.replace(".png", "")
+                # Save GT and Rendered Images
+                cv2.imwrite(os.path.join(images_dir, f"{file_prefix}_color_gt.png"), cv2.cvtColor(gt_color_numpy, cv2.COLOR_RGB2BGR))
+                # cv2.imwrite(os.path.join(images_dir, f"{file_prefix}_depth_gt.png"), gt_depth_vis_color)
+                gt_depth_vis_color.save(os.path.join(images_dir, f"{file_prefix}_depth_gt.png"))
+                cv2.imwrite(os.path.join(images_dir, f"{file_prefix}_semantics_gt.png"), cv2.cvtColor(gt_semantics_numpy, cv2.COLOR_RGB2BGR))
+                cv2.imwrite(os.path.join(images_dir, f"{file_prefix}_color_rendered.png"), cv2.cvtColor(rendered_color_numpy, cv2.COLOR_RGB2BGR))
+                # cv2.imwrite(os.path.join(images_dir, f"{file_prefix}_depth_rendered.png"), rendered_depth_vis_color)
+                rendered_depth_vis_color.save(os.path.join(images_dir, f"{file_prefix}_depth_rendered.png"))
+                cv2.imwrite(os.path.join(images_dir, f"{file_prefix}_semantics_rendered.png"), cv2.cvtColor(rendered_semantics_numpy, cv2.COLOR_RGB2BGR))
+                cv2.imwrite(os.path.join(images_dir, f"{file_prefix}_silhouette_rendered.png"), rendered_silhouette_vis_color)
             curr_time_idx += 1
-        mean_psnr = np.mean(psnr_list)
-        mean_ssim = np.mean(ssmi_list)
-        mean_lpips = np.mean(lpips_list)
-        mean_rmse = np.mean(rmse_list)
-        mean_depth_l1 = np.mean(depth_l1_list)
-        mean_miou = np.mean(miou_list)
+        mean_psnr = np.nanmean(psnr_list)
+        mean_ssim = np.nanmean(ssmi_list)
+        mean_lpips = np.nanmean(lpips_list)
+        mean_rmse = np.nanmean(rmse_list)
+        mean_depth_l1 = np.nanmean(depth_l1_list)
+        mean_miou = np.nanmean(miou_list)
         metrics_output_path = os.path.join(self.episode_dir, timestamp_str+"_evaluation_metrics.txt")
         with open(metrics_output_path, 'a') as f:
             f.write(f"\nTest Evaluation Metrics\n")
@@ -1682,9 +1764,9 @@ def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("experiment", type=str, help="Path to experiment file")
+    parser.add_argument("alternative_colmap_dataset", type=str, help="Path to alternative colmap dataset")
 
     args = parser.parse_args()
-
     experiment = SourceFileLoader(
         os.path.basename(args.experiment), args.experiment
     ).load_module()
@@ -1699,13 +1781,12 @@ def main():
     if not experiment.config['load_checkpoint']:
         os.makedirs(results_dir, exist_ok=True)
         shutil.copy(args.experiment, os.path.join(results_dir, "config.py"))
-    return experiment.config
+    return experiment.config, args.alternative_colmap_dataset
 
 if __name__ == '__main__':
     try:
-        config = main()
-        
-        node = ActiveSLAM(config)
+        config, alternative_colmap_dataset = main()
+        node = ActiveSLAM(config, alternative_colmap_dataset)
         rospy.spin()
     except rospy.ROSInterruptException:
         pass

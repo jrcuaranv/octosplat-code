@@ -54,7 +54,7 @@ config = dict(
         start=0,
         end=-1,
         stride=1,
-        num_frames= 100, # Set to -1 to use all frames
+        num_frames= 80,#Set to -1 to use all frames
         load_semantics=True,
         num_semantic_classes=3 # background, fruit, leaves
     ),
@@ -170,7 +170,7 @@ config = dict(
             stop_after=5000,
             densify_every= 55,#100,
             grad_thresh=0.00005,
-            num_to_split_into=4,
+            num_to_split_into=2,
             removal_opacity_threshold=0.4,
             final_removal_opacity_threshold=0.4,
             reset_opacities=False,
@@ -191,7 +191,7 @@ config = dict(
         load_semantics=True, # Whether load semantic information
     ),
     active_mapping=dict(
-        data_mode='gazebo_robot', # ['real_robot', 'gazebo_robot', 'colmap_dataset', 'rosbag_file'] (Adjusts Intrinsics and other data-related parameters based on the dataset being used for active mapping)
+        data_mode='colmap_dataset', # ['real_robot', 'gazebo_robot', 'colmap_dataset', 'rosbag_file'] (Adjusts Intrinsics and other data-related parameters based on the dataset being used for active mapping)
         real_robot=dict(
             output_dir= '/mnt/ssd1T/results_mapping/',
             apply_depth_median_filter = False,
@@ -208,7 +208,8 @@ config = dict(
                                 [ 0.,          0.,          0.,          1.        ]]
         ),
         gazebo_robot=dict(
-            output_dir= '/media/jose/SSD1G/results_mapping/',
+            # output_dir= '/media/jose/SSD1G/results_mapping/', # for jose user
+            output_dir= '/mnt/ssd2T/sgs_results_mapping/', # for temp user
             apply_depth_median_filter = False,
             apply_statistical_outlier_filter = False,
             max_depth=1.5,
@@ -224,16 +225,24 @@ config = dict(
         ),
         # adjust intrinsics depending on the dataset being used for active mapping
         colmap_dataset=dict(
-            output_dir= '/media/jose/SSD1G/results_mapping/',
+            # output_dir= '/media/jose/SSD1G/results_mapping/', # for jose user
+            # output_dir= '/mnt/ssd2T/sgs_results_mapping/', # for temp user
+            output_dir= '/mnt/ssd1T/results_mapping/', # for orin computer
+            # datasets in temp user's directory
+            # colmap_scene_path = '/mnt/ssd2T/datasets/gaussian_splat_data/2026-05-13-11-03-47_greenhouse',
+            # colmap_scene_path = '/mnt/ssd2T/datasets/gaussian_splat_data/2026-06-18_12-53-29_gazebo_peppers',
+            colmap_scene_path = None, # This will be set from the command line argument in the script
+            
+            # datasets in jose user's directory
             # colmap_scene_path = '/media/jose/SSD1G/datasets/active_mapping_2025_data/zed2i_lab_data/2026-05-09-12-28-20_lab_trees_postprocessed',
-            colmap_scene_path = '/media/jose/SSD1G/datasets/active_mapping_2025_data/zed2i_lab_data/2026-05-13-11-03-47_greenhouse',
+            # colmap_scene_path = '/media/jose/SSD1G/datasets/active_mapping_2025_data/zed2i_lab_data/2026-05-13-11-03-47_greenhouse',
             # colmap_scene_path = '/media/jose/SSD1G/datasets/active_mapping_2025_data/zed2i_lab_data/2026-05-27-12-38-08_greenhouse',
             # colmap_scene_path = '/media/jose/SSD1G/datasets/active_mapping_results/2026-05-25_10-46-08',
             # colmap_scene_path = '/media/jose/SSD1G/datasets/active_mapping_results/2026-05-26_10-38-11',
             # colmap_scene_path = '/media/jose/SSD1G/datasets/active_mapping_results/2026-05-27_11-01-28_greenhouse_robot',
             apply_depth_median_filter = False,
             apply_statistical_outlier_filter = False,
-            max_depth=1.5,
+            max_depth=1.0,
             crop_size = None,
             T_link6_camframe = None, # Not needed for colmap dataset since poses are already in the camera frame
         ),
