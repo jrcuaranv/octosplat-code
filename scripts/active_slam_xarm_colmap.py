@@ -747,10 +747,15 @@ class ActiveSLAM:
                     break
                 time.sleep(0.5)
             dataset_0 = self.get_sample_data()
-            _, depth_sample, _, _, _, _, _ = dataset_0
-            valid_data = depth_sample.sum().item() > 0 and dataset_0 is not None
-            if (valid_data == False):
+            if dataset_0 is None:
                 print("No valid sample data...")
+            else:
+                _, depth_sample, _, _, _, _, _ = dataset_0
+                if depth_sample.sum().item() > 0:
+                    valid_data = True
+                else:
+                    print("Depth sample is empty. Waiting for next sample...")
+            
                 
         self.params, self.variables, self.intrinsics, self.first_frame_w2c, self.cam, \
             self.params_opt_exclude = initialize_first_timestep(dataset_0, num_frames, config['scene_radius_depth_ratio'],
@@ -837,10 +842,14 @@ class ActiveSLAM:
                         #     self.full_optimization_requested = False
                             
                     sample_data = self.get_sample_data()
-                    color, depth, _, gt_pose, semantic_id, semantic_color, confidence_map = sample_data
-                    valid_data = depth.sum().item() > 0 and sample_data is not None
-                    if (valid_data is None):
+                    if sample_data is None:
                         print("No valid sample data...")
+                    else:
+                        color, depth, _, gt_pose, semantic_id, semantic_color, confidence_map = sample_data
+                        if depth.sum().item() > 0:
+                            valid_data = True
+                        else:
+                            print("Depth sample is empty. Waiting for next sample...")
                 sem_target = torch.tensor([1.0,0,0]).to(self.device) #red
                 rmse = torch.linalg.norm(sem_target - self.params['semantic_colors'].clip(0,1), axis=1)/math.sqrt(3)
                 # cos_similarity = F.cosine_similarity(sem_target, self.params['semantic_colors'],dim=1)
