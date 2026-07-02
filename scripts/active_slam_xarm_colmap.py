@@ -129,7 +129,6 @@ class ActiveSLAM:
         
         prefix = config['active_mapping']['data_mode']
         self.episode_suffix = ""
-            
         if prefix == 'colmap_dataset':
             self.running_colmap_dataset = True
             self.colmap_scene_path = self.config['active_mapping'][prefix]['colmap_scene_path']
@@ -166,6 +165,9 @@ class ActiveSLAM:
             self.cy = self.config['active_mapping'][prefix]['cy']
         
         self.output_directory = self.config['active_mapping'][prefix]['output_dir']
+        # creating directory if it does not exist
+        if not os.path.exists(self.output_directory):
+            os.makedirs(self.output_directory)
         rgb_topic = '/camera2/color/rgb'
         depth_topic = '/camera2/color/depth'
         semantics_topic = '/camera2/color/semantics'

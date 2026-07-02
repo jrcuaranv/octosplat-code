@@ -1125,7 +1125,7 @@ def eval_single_frame(gt_rgb, gt_depth, gt_seg, gt_confidence_map, rendered_rgb,
     weighted_rend_im = rendered_rgb * valid_confidence_mask
     weighted_gt_im = gt_rgb * valid_confidence_mask
     psnr = calc_psnr(weighted_rend_im, weighted_gt_im).mean()
-    ssim = ms_ssim(weighted_rend_im.unsqueeze(0).cpu(), weighted_gt_im.unsqueeze(0).cpu(),
+    ssim = ms_ssim(weighted_rend_im.unsqueeze(0).cuda(), weighted_gt_im.unsqueeze(0).cuda(),
                     data_range=1.0, size_average=True)
     # loss_fn_alex.to(device)
     # lpips_score = loss_fn_alex(torch.clamp(weighted_rend_im.unsqueeze(0), 0.0, 1.0),
