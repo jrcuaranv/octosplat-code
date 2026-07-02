@@ -820,16 +820,21 @@ class ActiveSLAM:
                         if self.new_rgbd_slam_session == True:
                             print("New RGBD SLAM session triggered. Exiting current SLAM session.")
                             return
-                        while time_idx == num_frames - 1:
+                        if time_idx == num_frames - 1:
                             self.save_params_callback(None)
                             print(f"Checkpoint reached at time idx {time_idx}. Pausing SLAM session for inspection.")
                             # input("Press Enter to continue...")
                             self.terminate_process = True
                             return
                             
-                            time.sleep(5.0)
+                            
                         
                         if self.running_colmap_dataset == True:
+                            if self.offline_sample_idx >= len(self.train_files):
+                                print("All samples from the training dataset have been used. Saving and exiting current SLAM session.")
+                                self.save_params_callback(None)
+                                self.terminate_process = True
+                                return
                             print("Running colmap dataset. Getting next sample data...")
                             break
                         while self.full_optimization_requested == True:
