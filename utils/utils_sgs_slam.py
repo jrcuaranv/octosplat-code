@@ -389,7 +389,7 @@ def render_cam(params, cam, iter_time_idx, device='cuda'):
     return rgb_torch, depth_torch, semantics_torch, silhouette_torch
     
 # original implementation loss
-def get_loss_original(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_for_loss, sil_thres,
+def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_for_loss, sil_thres,
              use_l1, ignore_outlier_depth_loss, tracking=False, mapping=False, do_ba=False, device="cuda",
              plot_dir=None, visualize_tracking_loss=False, tracking_iteration=None, load_semantics=False, visualization = False):
     # Initialize Loss Dictionary
@@ -536,7 +536,7 @@ def get_loss_original(params, curr_data, variables, iter_time_idx, loss_weights,
     return loss, variables, weighted_losses
 
 # new loss
-def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_for_loss, sil_thres,
+def get_loss_new(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_for_loss, sil_thres,
              use_l1, ignore_outlier_depth_loss, tracking=False, mapping=False, do_ba=False, device="cuda",
              plot_dir=None, visualize_tracking_loss=False, tracking_iteration=None, load_semantics=False, visualization = False):
     # Initialize Loss Dictionary
