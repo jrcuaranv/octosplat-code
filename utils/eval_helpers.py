@@ -1153,7 +1153,7 @@ def eval_single_frame(gt_rgb, gt_depth, gt_seg, gt_confidence_map, rendered_rgb,
         rmse = nan
         depth_l1 = nan
     else:
-        diff_sq = torch.sqrt((((rendered_depth - gt_depth)) ** 2))
+        diff_sq = (rendered_depth - gt_depth) ** 2
         diff_sq = diff_sq * valid_depth_mask
         rmse = torch.sqrt(diff_sq.sum() / valid_depth_mask.sum()).item()
         diff_depth_l1 = torch.abs((rendered_depth - gt_depth))
