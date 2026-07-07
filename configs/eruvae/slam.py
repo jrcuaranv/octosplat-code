@@ -191,7 +191,7 @@ config = dict(
         load_semantics=True, # Whether load semantic information
     ),
     active_mapping=dict(
-        data_mode='gazebo_robot', # ['real_robot', 'gazebo_robot', 'colmap_dataset', 'rosbag_file'] (Adjusts Intrinsics and other data-related parameters based on the dataset being used for active mapping)
+        data_mode='real_robot', # ['real_robot', 'gazebo_robot', 'colmap_dataset', 'rosbag_file'] (Adjusts Intrinsics and other data-related parameters based on the dataset being used for active mapping)
         real_robot=dict(
             output_dir= '/mnt/ssd1T/results_mapping/',
             apply_depth_median_filter = False,
