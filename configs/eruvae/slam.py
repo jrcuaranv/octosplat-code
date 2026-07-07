@@ -139,7 +139,7 @@ config = dict(
         #     reset_opacities_every=500, # Doesn't consider iter 0
         # ),
         prune_gaussians=True, # Prune Gaussians during Mapping
-        prune_background_gaussians=False,
+        prune_background_gaussians=True,
         pruning_dict=dict( # Needs to be updated based on the number of mapping iterations
             start_after=1,
             remove_big_after=0,
@@ -191,7 +191,7 @@ config = dict(
         load_semantics=True, # Whether load semantic information
     ),
     active_mapping=dict(
-        data_mode='colmap_dataset', # ['real_robot', 'gazebo_robot', 'colmap_dataset', 'rosbag_file'] (Adjusts Intrinsics and other data-related parameters based on the dataset being used for active mapping)
+        data_mode='gazebo_robot', # ['real_robot', 'gazebo_robot', 'colmap_dataset', 'rosbag_file'] (Adjusts Intrinsics and other data-related parameters based on the dataset being used for active mapping)
         real_robot=dict(
             output_dir= '/mnt/ssd1T/results_mapping/',
             apply_depth_median_filter = False,
@@ -208,8 +208,8 @@ config = dict(
                                 [ 0.,          0.,          0.,          1.        ]]
         ),
         gazebo_robot=dict(
-            # output_dir= '/media/jose/SSD1G/results_mapping/', # for jose user
-            output_dir= '/mnt/ssd2T/sgs_results_mapping/', # for temp user
+            output_dir= '/media/jose/SSD1G/results_mapping/', # for jose user
+            # output_dir= '/mnt/ssd2T/sgs_results_mapping/', # for temp user
             apply_depth_median_filter = False,
             apply_statistical_outlier_filter = False,
             max_depth=1.5,
