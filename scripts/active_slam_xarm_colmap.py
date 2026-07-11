@@ -878,8 +878,10 @@ class ActiveSLAM:
                     # evaluate surface coverage
                     # surface_coverage = compute_surface_coverage(self.gt_pointcloud, target_gaussians_3D,
                     #                                             offset = self.xyz_plant_origin, dist_threshold= 0.01)
-
+                    start_time = time.time()
                     sem_centroids = dbscan_clustering(target_gaussians_3D, eps_= 0.02, min_samples=100) # 250
+                    end_time = time.time()
+                    print("DBSCAN clustering time:", end_time - start_time)
                     sem_centroids_w = sem_centroids
                     
                     print(f"Number of semantic centroids: {sem_centroids_w.shape[0]}")

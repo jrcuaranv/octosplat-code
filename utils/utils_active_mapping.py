@@ -148,12 +148,33 @@ def SE3_to_ros_pose(T):
     ros_pose = Pose(Point(t[0],t[1],t[2]), Quaternion(q[0],q[1],q[2],q[3])) #x,y,z,qx,qy,qz,qw
     return ros_pose
 
-def dbscan_clustering(points, eps_ = 0.02, min_samples = 50):
+def dbscan_clustering(points, eps_ = 0.02, min_samples = 5):
 
-    # Run DBSCAN via Open3D's C++ implementation (much faster than sklearn at ~1M points)
+    points64 = np.asarray(points, dtype=np.float64)
     pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(np.asarray(points, dtype=np.float64))
-    labels = np.array(pcd.cluster_dbscan(eps=eps_, min_points=min_samples))
+    pcd.points = o3d.utility.Vector3dVector(points64)
+
+    # Voxel-downsample before clustering: DBSCAN can't resolve structure finer
+    # than eps_ anyway, so collapsing points within eps_/2 of each other cuts
+    # the point count (and DBSCAN's runtime) by ~1-2 orders of magnitude at
+    # ~1M points, with negligible effect on the resulting centroids.
+    voxel_size = eps_ / 2.0
+    min_bound = pcd.get_min_bound() - voxel_size * 0.5
+    max_bound = pcd.get_max_bound() + voxel_size * 0.5
+    down_pcd, _, point_indices = pcd.voxel_down_sample_and_trace(voxel_size, min_bound, max_bound)
+
+    # min_points must be scaled down to match the coarser voxel grid; the
+    # true density requirement is re-checked below against full-resolution
+    # point counts, so this only needs to be a reasonable noise filter.
+    downsample_ratio = len(point_indices) / len(points64)
+    min_points_down = max(3, int(min_samples * downsample_ratio))
+    labels_down = np.array(down_pcd.cluster_dbscan(eps=eps_, min_points=min_points_down))
+
+    # Propagate voxel labels back to the original, full-resolution points
+    labels = np.full(len(points64), -1, dtype=np.int64)
+    for voxel_idx, orig_indices in enumerate(point_indices):
+        labels[np.asarray(orig_indices)] = labels_down[voxel_idx]
+
     unique_labels = set(labels.tolist()) - {-1} # remove noise points
 
     # Compute centroids
