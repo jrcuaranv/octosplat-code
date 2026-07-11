@@ -3,7 +3,6 @@ import numpy as np
 import open3d as o3d
 from scipy.spatial.transform import Rotation
 from geometry_msgs.msg import Pose, Twist, Point, Quaternion
-from sklearn.cluster import DBSCAN
 from utils.utils import compute_xyz_vector
 
 
@@ -151,10 +150,11 @@ def SE3_to_ros_pose(T):
 
 def dbscan_clustering(points, eps_ = 0.02, min_samples = 50):
 
-    # Run DBSCAN
-    db = DBSCAN(eps = eps_, min_samples=min_samples).fit(points)
-    labels = db.labels_
-    unique_labels = set(labels) - {-1} # remove noise points
+    # Run DBSCAN via Open3D's C++ implementation (much faster than sklearn at ~1M points)
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(np.asarray(points, dtype=np.float64))
+    labels = np.array(pcd.cluster_dbscan(eps=eps_, min_points=min_samples))
+    unique_labels = set(labels.tolist()) - {-1} # remove noise points
 
     # Compute centroids
     centroids = []
