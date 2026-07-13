@@ -118,17 +118,29 @@ def evaluate_label_miou(pred_label, gt_label):
     return miou
 
 
-def evaluate_miou(recolored_img, gt_img):
+def evaluate_miou(recolored_img, gt_img, valid_mask=None):
     """
-    Input : 
+    Input :
         recolored_img: torch tensor of the colored semantic image, shape (C, H, W)
         gt_img: torch tensor of the colored semantic image, shape (C, H, W)
+        valid_mask: optional (H, W) boolean tensor. When given, this decides
+            which pixels are scored instead of inferring it from color, and
+            [0, 0, 0] is treated as a real class (e.g. "background") rather
+            than "unlabeled". Needed whenever [0, 0, 0] doubles as both a
+            legitimate class and the "excluded" fill value -- inferring
+            validity from color alone would then also drop real instances
+            of that class, and could never register a false-positive
+            prediction of another class landing on top of it.
+            When omitted, falls back to the original color-based behavior.
     """
     gt_flat = gt_img.permute(1, 2, 0).view(-1, 3)
     pred_flat = recolored_img.permute(1, 2, 0).view(-1, 3)
 
-    # Filter out [0, 0, 0] (unlabeled) pixels
-    labeled_pixels = (gt_flat != torch.tensor([0, 0, 0], dtype=torch.uint8).cuda()).any(dim=1)
+    if valid_mask is not None:
+        labeled_pixels = valid_mask.view(-1).bool()
+    else:
+        # Filter out [0, 0, 0] (unlabeled) pixels
+        labeled_pixels = (gt_flat != torch.tensor([0, 0, 0], dtype=torch.uint8).cuda()).any(dim=1)
     gt_flat = gt_flat[labeled_pixels]
     pred_flat = pred_flat[labeled_pixels]
 
@@ -136,8 +148,10 @@ def evaluate_miou(recolored_img, gt_img):
     iou_per_color = []
 
     for color in unique_colors:
-        # Skip the unlabeled color
-        if torch.equal(color, torch.tensor([0, 0, 0], dtype=torch.uint8).cuda()):
+        # Skip the unlabeled color. Only applies when valid_mask wasn't
+        # given, since with an explicit valid_mask, [0, 0, 0] is a real
+        # class and should be scored like any other.
+        if valid_mask is None and torch.equal(color, torch.tensor([0, 0, 0], dtype=torch.uint8).cuda()):
             continue
 
         gt_matches = torch.all(gt_flat == color, dim=1)
@@ -1101,6 +1115,81 @@ def eval_nvs(dataset, final_params, num_frames, eval_dir, sil_thres, mapping_ite
         wandb_run.log({"Eval/Metrics": fig})
     plt.close()
 
+def _gaussian_window_1d(size, sigma):
+    coords = torch.arange(size, dtype=torch.float)
+    coords -= size // 2
+    g = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
+    g /= g.sum()
+    return g.unsqueeze(0).unsqueeze(0)
+
+
+def _gaussian_blur(x, win):
+    # Separable Gaussian blur with valid (no) padding, mirroring
+    # pytorch_msssim's internal gaussian_filter. Shrinks H and W by
+    # (win_size - 1) each, since no padding is applied.
+    win = win.to(x.device, dtype=x.dtype)
+    C = x.shape[1]
+    out = x
+    out = F.conv2d(out, weight=win, stride=1, padding=0, groups=C)
+    out = F.conv2d(out, weight=win.transpose(2, 3), stride=1, padding=0, groups=C)
+    return out
+
+
+def calc_masked_psnr(img1, img2, mask):
+    """PSNR computed only over pixels where mask is nonzero.
+    img1, img2: (C, H, W) tensors. mask: (H, W) tensor (bool or 0/1 float).
+    Returns a (C,) tensor of per-channel PSNR, matching calc_psnr's shape.
+    """
+    mask = mask.float()
+    num_valid = mask.sum().clamp(min=1.0)
+    diff_sq = (img1 - img2) ** 2 * mask.unsqueeze(0)
+    mse = diff_sq.view(img1.shape[0], -1).sum(dim=1) / num_valid
+    return 20 * torch.log10(1.0 / torch.sqrt(mse))
+
+
+def masked_ssim(X, Y, mask, data_range=1.0, win_size=11, win_sigma=1.5, K=(0.01, 0.03)):
+    """Single-scale SSIM computed only over pixels where mask is nonzero.
+    X, Y: (N, C, H, W) tensors. mask: (H, W) tensor (bool or 0/1 float), in
+    the same pre-blur resolution as X/Y.
+
+    pytorch_msssim's ssim/ms_ssim average the SSIM map over the whole frame,
+    so zeroing out irrelevant pixels before calling them just makes the
+    (trivially perfect, 0-vs-0) masked-out region dilute the score. This
+    instead crops the mask to match the valid-convolution output of the
+    Gaussian window and averages only the masked entries of the SSIM map.
+    """
+    K1, K2 = K
+    C1 = (K1 * data_range) ** 2
+    C2 = (K2 * data_range) ** 2
+
+    win = _gaussian_window_1d(win_size, win_sigma)
+    win = win.repeat([X.shape[1], 1, 1, 1]).to(X.device, dtype=X.dtype)
+
+    mu1 = _gaussian_blur(X, win)
+    mu2 = _gaussian_blur(Y, win)
+    mu1_sq = mu1.pow(2)
+    mu2_sq = mu2.pow(2)
+    mu1_mu2 = mu1 * mu2
+    sigma1_sq = _gaussian_blur(X * X, win) - mu1_sq
+    sigma2_sq = _gaussian_blur(Y * Y, win) - mu2_sq
+    sigma12 = _gaussian_blur(X * Y, win) - mu1_mu2
+
+    cs_map = (2 * sigma12 + C2) / (sigma1_sq + sigma2_sq + C2)
+    ssim_map = ((2 * mu1_mu2 + C1) / (mu1_sq + mu2_sq + C1)) * cs_map  # (N, C, H', W')
+
+    pad = win_size // 2
+    mask = mask.float()
+    while mask.dim() < ssim_map.dim():
+        mask = mask.unsqueeze(0)
+    mask_cropped = mask[..., pad:mask.shape[-2] - pad, pad:mask.shape[-1] - pad]
+    mask_cropped = mask_cropped.expand_as(ssim_map)
+
+    num_valid = mask_cropped.sum()
+    if num_valid == 0:
+        return torch.tensor(float('nan'), device=X.device, dtype=X.dtype)
+    return (ssim_map * mask_cropped).sum() / num_valid
+
+
 def eval_single_frame(gt_rgb, gt_depth, gt_seg, gt_confidence_map, rendered_rgb, rendered_depth, rendered_seg, device="cuda"):
     
     # rgb and seg have shape (C, H, W)
@@ -1110,10 +1199,11 @@ def eval_single_frame(gt_rgb, gt_depth, gt_seg, gt_confidence_map, rendered_rgb,
     background_mask = torch.all(gt_seg == background_color[:, None, None], dim=0)
     fruit_mask = torch.all(gt_seg == fruit_color[:, None, None], dim=0)
 
-    
+    no_surface_mask = (rendered_depth[0] == 0)  # no gaussian rendered at this pixel; captured before rendered_depth is overwritten below
+
     valid_confidence_mask = (gt_confidence_map > 0.4)*(~background_mask)*fruit_mask
-    valid_confidence_mask[rendered_depth[0]==0] = 0 # also mask out pixels where rendered depth is 0 (no surface rendered)
-    valid_depth_mask = (gt_depth > 0)*valid_confidence_mask
+    valid_confidence_mask[no_surface_mask] = 0 # also mask out pixels where rendered depth is 0 (no surface rendered)
+    valid_depth_mask = (gt_depth > 0)*(gt_depth < 1.0)*valid_confidence_mask
     rendered_depth = rendered_depth * valid_depth_mask
     nan = float('nan')
 
@@ -1121,12 +1211,13 @@ def eval_single_frame(gt_rgb, gt_depth, gt_seg, gt_confidence_map, rendered_rgb,
         print("No valid pixels for evaluation based on confidence map. Returning NaN for all metrics.")
         return nan, nan, nan, nan, nan, nan
     # Render RGB and Calculate PSNR, SSIM, LPIPS
-    
-    weighted_rend_im = rendered_rgb * valid_confidence_mask
-    weighted_gt_im = gt_rgb * valid_confidence_mask
-    psnr = calc_psnr(weighted_rend_im, weighted_gt_im).mean()
-    ssim = ms_ssim(weighted_rend_im.unsqueeze(0).cuda(), weighted_gt_im.unsqueeze(0).cuda(),
-                    data_range=1.0, size_average=True)
+    # PSNR and SSIM are computed only over valid_confidence_mask pixels
+    # (not just zeroed-out-then-averaged-over-the-whole-frame, which would
+    # dilute both metrics by however much of the frame is masked out).
+
+    psnr = calc_masked_psnr(rendered_rgb, gt_rgb, valid_confidence_mask).mean()
+    ssim = masked_ssim(rendered_rgb.unsqueeze(0).cuda(), gt_rgb.unsqueeze(0).cuda(),
+                        valid_confidence_mask, data_range=1.0)
     # loss_fn_alex.to(device)
     # lpips_score = loss_fn_alex(torch.clamp(weighted_rend_im.unsqueeze(0), 0.0, 1.0),
                                 # torch.clamp(weighted_gt_im.unsqueeze(0), 0.0, 1.0)).item()
@@ -1160,12 +1251,23 @@ def eval_single_frame(gt_rgb, gt_depth, gt_seg, gt_confidence_map, rendered_rgb,
         diff_depth_l1 = diff_depth_l1 * valid_depth_mask
         depth_l1 = (diff_depth_l1.sum() / valid_depth_mask.sum()).item()
     
-    # Compute metrics for semantics
-
-    gt_seg = gt_seg * valid_confidence_mask
-    rendered_seg = rendered_seg * valid_confidence_mask
-    rendered_seg = recolor_semantic_img(rendered_seg, gt_seg)
-    miou = evaluate_miou(rendered_seg, gt_seg)
+    # Compute metrics for semantics.
+    # Deliberately NOT using valid_confidence_mask here: that mask requires
+    # gt_seg == fruit_color, so masking gt_seg with it turns every
+    # background/leaf pixel into [0, 0, 0], and evaluate_miou's own
+    # unlabeled-pixel filtering would then drop them from consideration
+    # entirely -- silently discarding any case where the render hallucinates
+    # fruit/leaf color over background (or misses a leaf) instead of
+    # counting it as an error. Use a mask based only on label confidence and
+    # render coverage instead, so all three classes (background, fruit,
+    # leaves) stay distinguishable and are scored, including [0, 0, 0].
+    miou_valid_mask = (gt_confidence_map > 0.4)
+    miou_valid_mask[no_surface_mask] = 0
+    if miou_valid_mask.sum() == 0:
+        miou = nan
+    else:
+        rendered_seg_recolored = recolor_semantic_img(rendered_seg, gt_seg)
+        miou = evaluate_miou(rendered_seg_recolored, gt_seg, valid_mask=miou_valid_mask)
     
 
     return psnr.detach().cpu().item(), ssim.detach().cpu().item(), lpips_score, rmse, depth_l1, miou
