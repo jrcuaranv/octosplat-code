@@ -1195,13 +1195,13 @@ def eval_single_frame(gt_rgb, gt_depth, gt_seg, gt_confidence_map, rendered_rgb,
     # rgb and seg have shape (C, H, W)
     background_color = torch.tensor([0, 0, 0],device=device, dtype=gt_seg.dtype)
     fruit_color = torch.tensor([1, 0, 0],device=device, dtype=gt_seg.dtype)
-
+    
     background_mask = torch.all(gt_seg == background_color[:, None, None], dim=0)
     fruit_mask = torch.all(gt_seg == fruit_color[:, None, None], dim=0)
-
+    
     no_surface_mask = (rendered_depth[0] == 0)  # no gaussian rendered at this pixel; captured before rendered_depth is overwritten below
 
-    valid_confidence_mask = (gt_confidence_map > 0.4)*(~background_mask)*fruit_mask
+    valid_confidence_mask = (gt_confidence_map > 0.4)*(~background_mask) * fruit_mask
     valid_confidence_mask[no_surface_mask] = 0 # also mask out pixels where rendered depth is 0 (no surface rendered)
     valid_depth_mask = (gt_depth > 0)*(gt_depth < 1.0)*valid_confidence_mask
     rendered_depth = rendered_depth * valid_depth_mask
@@ -1261,7 +1261,7 @@ def eval_single_frame(gt_rgb, gt_depth, gt_seg, gt_confidence_map, rendered_rgb,
     # counting it as an error. Use a mask based only on label confidence and
     # render coverage instead, so all three classes (background, fruit,
     # leaves) stay distinguishable and are scored, including [0, 0, 0].
-    miou_valid_mask = (gt_confidence_map > 0.4)
+    miou_valid_mask = (gt_confidence_map > 0.4)*(~background_mask)
     miou_valid_mask[no_surface_mask] = 0
     if miou_valid_mask.sum() == 0:
         miou = nan

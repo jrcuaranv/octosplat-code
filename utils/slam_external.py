@@ -350,10 +350,19 @@ def prune_gaussians(params, params_opt_exclude, variables, optimizer, iter, prun
         
         # Reset Opacities for all Gaussians
         if iter > 0 and iter % prune_dict['reset_opacities_every'] == 0 and prune_dict['reset_opacities']:
+            print(f"{BLUE}\nResetting opacities at iteration {iter}{RESET}")
             new_params = {'logit_opacities': inverse_sigmoid(torch.ones_like(params['logit_opacities']) * 0.01)}
-            params = update_params_and_optimizer(new_params, params, optimizer)
-        
+            params = update_params_and_optimizer(new_params, params, params_opt_exclude, optimizer)
+
     return params, variables
+
+def reset_semantics(params, params_opt_exclude, optimizer, iter, reset_dict):
+    if iter > 0 and iter % reset_dict['reset_semantics_every'] == 0 and reset_dict['reset_semantics']:
+        print(f"{BLUE}\nResetting semantics at iteration {iter}{RESET}")
+        new_params = {'semantic_colors': torch.ones_like(params['semantic_colors']) * 0.5}
+        params = update_params_and_optimizer(new_params, params, params_opt_exclude, optimizer)
+    return params
+
 
 def prune_aux_gaussians(params, params_opt_exclude, variables, optimizer):
     to_remove = params['semantic_ids']==0.555

@@ -140,6 +140,8 @@ config = dict(
         # ),
         prune_gaussians=True, # Prune Gaussians during Mapping
         prune_background_gaussians=True,
+        reset_semantics=True, # Reset all semantic colors to 0.5 periodically during Mapping
+        reset_semantics_every=200, # Doesn't consider iter 0
         pruning_dict=dict( # Needs to be updated based on the number of mapping iterations
             start_after=1,
             remove_big_after=0,
@@ -191,7 +193,7 @@ config = dict(
         load_semantics=True, # Whether load semantic information
     ),
     active_mapping=dict(
-        data_mode='real_robot', # ['real_robot', 'gazebo_robot', 'colmap_dataset', 'rosbag_file'] (Adjusts Intrinsics and other data-related parameters based on the dataset being used for active mapping)
+        data_mode='colmap_dataset', # ['real_robot', 'gazebo_robot', 'colmap_dataset', 'rosbag_file'] (Adjusts Intrinsics and other data-related parameters based on the dataset being used for active mapping)
         real_robot=dict(
             output_dir= '/mnt/ssd1T/results_mapping/',
             apply_depth_median_filter = False,

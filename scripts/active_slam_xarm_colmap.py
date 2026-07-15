@@ -89,7 +89,7 @@ from utils.slam_helpers import (
     get_c2w_from_params,transformed_params2rendervar, filter_points_in_image, transformed_params2depth_silhouette_rgbloss, transformed_entropy2rendervar, transformed_params2depthplussilhouette,
     transformed_semantics2rendervar, transformed_rgb_loss_rendervar, transform_to_frame, transform_points_to_frame, l1_loss_v1, matrix_to_quaternion
 )
-from utils.slam_external import calc_ssim, build_rotation, densify_v2, prune_outliers_based_on_density_statistics, prune_background_semantics, prune_outlier_semantics, prune_gaussians, densify, prune_aux_gaussians, prune_outliers
+from utils.slam_external import calc_ssim, build_rotation, densify_v2, prune_outliers_based_on_density_statistics, prune_background_semantics, prune_outlier_semantics, prune_gaussians, densify, prune_aux_gaussians, prune_outliers, reset_semantics
 
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 
@@ -280,6 +280,8 @@ class ActiveSLAM:
         
 
     def save_params_callback(self, req):
+        
+        self.full_map_optimization(200) # a few additional optimization steps for refinenment
         rospy.loginfo("Saving parameters...")
         # Get current time
         now = datetime.now()
@@ -1232,6 +1234,9 @@ class ActiveSLAM:
                             self.params, self.variables = prune_gaussians(self.params, self.params_opt_exclude, self.variables, optimizer, iter, config['mapping']['pruning_dict'])
                         if config['mapping']['prune_background_gaussians']:
                             self.params, self.variables = prune_background_semantics(self.params, self.params_opt_exclude, self.variables, optimizer, iter, config['mapping']['pruning_dict'])
+                        if config['mapping']['reset_semantics']:
+                            self.params = reset_semantics(self.params, self.params_opt_exclude, optimizer, iter, config['mapping'])
+                        
                             # self.params, self.variables = prune_outliers_based_on_density_statistics(self.params, self.params_opt_exclude, self.variables, optimizer, iter, config['mapping']['pruning_dict'], device=self.device)
                             # if iter == self.num_iters_mapping - 1:
                             #     params, self.variables = prune_outlier_semantics(params, self.params_opt_exclude, self.variables, optimizer)
@@ -1425,39 +1430,34 @@ class ActiveSLAM:
         
         
     def full_map_optimization(self, number_steps):
+        print(f"Running full map optimization on all keyframes for {number_steps} iterations...")
         # Reset Optimizer & Learning Rates for Full Map Optimization
         optimizer = initialize_optimizer(self.params, self.params_opt_exclude, self.config['mapping']['lrs'], tracking=False) 
         # Mapping
-        loss_weights=dict(
-            im=1.0, #1.0, #0.5
-            depth= 0.01, #0.5, #0.5, #0.25, #0.5,#1.0,
-            seg=0.1,#0.1
-            quality=0.1, #0.1,
-            depth_2 = 0.5,
-        )
-        pruning_dict=dict( # Needs to be updated based on the number of mapping iterations
-            start_after=1,
-            remove_big_after=1,
-            stop_after=15000, #20,
-            prune_every=500,
-            removal_opacity_threshold=0.4,
-            final_removal_opacity_threshold=0.4,
-            reset_opacities=False,
-            reset_opacities_every=500, # Doesn't consider iter 0
-        )
-        densify_dict=dict( # Needs to be updated based on the number of mapping iterations
-            start_after=1, #500,
-            remove_big_after=1,
-            stop_after=15000,
-            densify_every= 100,#100,
-            grad_thresh=0.00004,#0.00005,
-            num_to_split_into=2,
-            removal_opacity_threshold=0.4,
-            final_removal_opacity_threshold=0.4,
-            reset_opacities=False,
-            reset_opacities_every=3000, # Doesn't consider iter 0
-        )
-        print("Running full map optimization on all keyframes...")
+        
+        # pruning_dict=dict( # Needs to be updated based on the number of mapping iterations
+        #     start_after=1,
+        #     remove_big_after=1,
+        #     stop_after=15000, #20,
+        #     prune_every=500,
+        #     removal_opacity_threshold=0.4,
+        #     final_removal_opacity_threshold=0.4,
+        #     reset_opacities=False,
+        #     reset_opacities_every=500, # Doesn't consider iter 0
+        # )
+        # densify_dict=dict( # Needs to be updated based on the number of mapping iterations
+        #     start_after=1, #500,
+        #     remove_big_after=1,
+        #     stop_after=15000,
+        #     densify_every= 100,#100,
+        #     grad_thresh=0.00004,#0.00005,
+        #     num_to_split_into=2,
+        #     removal_opacity_threshold=0.4,
+        #     final_removal_opacity_threshold=0.4,
+        #     reset_opacities=False,
+        #     reset_opacities_every=3000, # Doesn't consider iter 0
+        # )
+        
         for iter in range(number_steps):
             # if iter%1000 == 0:
             #     print("RUnning pose optimization before map optimization...")
@@ -1479,31 +1479,29 @@ class ActiveSLAM:
             iter_data['semantic_color'] = self.keyframe_list[rand_idx]['semantic_color']
             # Loss for current frame
             visualization = False
-            loss, self.variables, losses = get_loss(self.params, iter_data, self.variables, iter_time_idx, loss_weights,
+            loss, self.variables, losses = get_loss(self.params, iter_data, self.variables, iter_time_idx, self.config['mapping']['loss_weights'],
                                             self.config['mapping']['use_sil_for_loss'], self.config['mapping']['sil_thres'],
                                             self.config['mapping']['use_l1'], self.config['mapping']['ignore_outlier_depth_loss'],
                                             mapping=True, device=self.device, plot_dir = self.eval_dir, load_semantics=True, visualization = visualization)
             # Backprop
             loss.backward()
             with torch.no_grad():
-                # self.params, self.variables = densify_v2(self.params, self.variables, optimizer, iter, self.config['mapping']['densify_dict'], self.params_opt_exclude, device=self.device)
-                self.params, self.variables = densify_v2(self.params, self.variables, optimizer, iter, densify_dict, self.params_opt_exclude, device=self.device)
+                self.params, self.variables = densify_v2(self.params, self.variables, optimizer, iter, self.config['mapping']['densify_dict'], self.params_opt_exclude, device=self.device)
                 # Optimizer Update
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 
                 # Prune Gaussians
-                # self.params, self.variables = prune_gaussians(self.params, self.params_opt_exclude, self.variables, optimizer, iter, self.config['mapping']['pruning_dict'])
-                self.params, self.variables = prune_gaussians(self.params, self.params_opt_exclude, self.variables, optimizer, iter, pruning_dict)
-                self.params, self.variables = prune_background_semantics(self.params, self.params_opt_exclude, self.variables, optimizer, iter, pruning_dict)
+                self.params, self.variables = prune_gaussians(self.params, self.params_opt_exclude, self.variables, optimizer, iter, self.config['mapping']['pruning_dict'])
+                self.params, self.variables = prune_background_semantics(self.params, self.params_opt_exclude, self.variables, optimizer, iter, self.config['mapping']['pruning_dict'])
                 
                 # if iter%2000 == 0:
                 #     prune_outliers_based_on_density_statistics(self.params, self.params_opt_exclude, self.variables, optimizer, iter, pruning_dict)
                 #     prune_outlier_semantics(self.params, self.params_opt_exclude, self.variables, optimizer)
                 #     prune_outliers(self.params, self.params_opt_exclude, self.variables, optimizer) # based on density  
-            if iter%1000 == 0:
-                print(f"Completed {iter} / {number_steps} iterations of full map optimization.")
-                self.save_params_callback(req = None)
+            # if iter%1000 == 0:
+            #     print(f"Completed {iter} / {number_steps} iterations of full map optimization.")
+            #     self.save_params_callback(req = None)
     def full_optimization_callback(self, req):
         self.full_optimization_requested = True
         time.sleep(2)

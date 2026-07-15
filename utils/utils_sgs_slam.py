@@ -77,19 +77,13 @@ def get_pointcloud(color, depth, confidence_map, intrinsics, w2c, transform_pts=
         point_cld = torch.cat((point_cld, semantic_id, semantic_color*0+0.5, rgb_loss, opt_count), -1)
         
     
-    sem_mask = (semantic_color[:,0] == 1) & (semantic_color[:,1] == 0) & (semantic_color[:,2] == 0)
-    sem_mask = sem_mask & (confidence_map[:,0] > 0.6) # Keep only high confidence semantic gaussians
+    # sem_mask = (semantic_color[:,0] == 1) & (semantic_color[:,1] == 0) & (semantic_color[:,2] == 0)
+    # sem_mask = sem_mask & (confidence_map[:,0] > 0.6) # Keep only high confidence semantic gaussians
+    # others_mask = ~sem_mask
+    # downsample_mask(others_mask, down_factor=0.7) # donwsampling irrelevant semantics (remove down_factor%)
+    # combined mask
+    # mask = mask & (sem_mask | others_mask)
     
-    # black_mask = (semantic_color[:,0] == 0) & (semantic_color[:,1] == 0) & (semantic_color[:,2] == 0)
-    others_mask = ~sem_mask
-
-    
-    # downsample_mask(others_mask, down_factor=0.1) # donwsampling irrelevant semantics (remove down_factor%)
-    # downsample_mask(sem_mask, down_factor=0.3)
-    
-    
-    #combined mask
-    mask = mask & (sem_mask | others_mask)
     # Select points based on mask
     if mask is not None:
         point_cld = point_cld[mask]
