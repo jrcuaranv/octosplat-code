@@ -1492,8 +1492,10 @@ class ActiveSLAM:
                 optimizer.zero_grad(set_to_none=True)
                 
                 # Prune Gaussians
-                self.params, self.variables = prune_gaussians(self.params, self.params_opt_exclude, self.variables, optimizer, iter, self.config['mapping']['pruning_dict'])
-                self.params, self.variables = prune_background_semantics(self.params, self.params_opt_exclude, self.variables, optimizer, iter, self.config['mapping']['pruning_dict'])
+                if self.config['mapping']['prune_gaussians']:
+                    self.params, self.variables = prune_gaussians(self.params, self.params_opt_exclude, self.variables, optimizer, iter, self.config['mapping']['pruning_dict'])
+                if self.config['mapping']['prune_background_gaussians']:
+                    self.params, self.variables = prune_background_semantics(self.params, self.params_opt_exclude, self.variables, optimizer, iter, self.config['mapping']['pruning_dict'])
                 
                 # if iter%2000 == 0:
                 #     prune_outliers_based_on_density_statistics(self.params, self.params_opt_exclude, self.variables, optimizer, iter, pruning_dict)
