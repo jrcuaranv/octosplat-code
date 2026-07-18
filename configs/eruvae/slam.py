@@ -10,7 +10,7 @@ elif username == "jose":
     output_dir = '/media/jose/SSD1G/results_mapping/'
     eval_data_folders = None
 elif username == "companion":
-    output_dir = '/mnt/ssd2T/results_mapping/'
+    output_dir = '/mnt/ssd1T/results_mapping/'
     eval_data_folders = '/mnt/ssd1T/active_mapping_evaluation_2026/eval_data_folders'
 else:
     raise ValueError(f"Unknown username: {username}. Please set the output_dir and eval_data_folders for this user.")
