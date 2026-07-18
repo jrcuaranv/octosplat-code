@@ -152,8 +152,8 @@ config = dict(
         #     reset_opacities_every=500, # Doesn't consider iter 0
         # ),
         prune_gaussians=True, # Prune Gaussians during Mapping
-        prune_background_gaussians=True,
-        reset_semantics=True, # Reset all semantic colors to 0.5 periodically during Mapping
+        prune_background_gaussians=False,
+        reset_semantics=False, # Reset all semantic colors to 0.5 periodically during Mapping
         reset_semantics_every=200, # Doesn't consider iter 0
         pruning_dict=dict( # Needs to be updated based on the number of mapping iterations
             start_after=1,
