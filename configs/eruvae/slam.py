@@ -2,6 +2,7 @@ import os
 from os.path import join as p_join
 import getpass
 username = getpass.getuser()
+print(f"Running as user: {username}")
 if username == "temp":
     output_dir = '/mnt/ssd2T/sgs_results_mapping/'
     eval_data_folders = '/mnt/ssd2T/datasets/gaussian_splat_data/active_mapping_evaluation_2026/eval_data_folders'
