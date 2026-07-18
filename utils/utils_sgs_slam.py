@@ -25,7 +25,7 @@ from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 
 def get_pointcloud(color, depth, confidence_map, intrinsics, w2c, transform_pts=True, mask=None,
                    compute_mean_sq_dist=False, mean_sq_dist_method="projective", device="cuda",
-                   load_semantics=False, semantic_id=None, semantic_color=None, rgb_loss = None):
+                   load_semantics=False, semantic_id=None, semantic_color=None):
     
     width, height = color.shape[2], color.shape[1]
     CX = intrinsics[0][2]
@@ -72,9 +72,7 @@ def get_pointcloud(color, depth, confidence_map, intrinsics, w2c, transform_pts=
         semantic_id = torch.permute(semantic_id, (1, 2, 0)).reshape(-1, 1) # (1, H, W) -> (H, W, 1) -> (H * W, 1)
         confidence_map = torch.permute(confidence_map, (1, 2, 0)).reshape(-1, 1)
         semantic_color = torch.permute(semantic_color, (1, 2, 0)).reshape(-1, 3) # (3, H, W) -> (H, W, 3) -> (H * W, 3)
-        rgb_loss = torch.permute(rgb_loss, (1, 2, 0)).reshape(-1, 1)
-        opt_count = torch.zeros(semantic_color.shape[0]).reshape(-1,1).to(device).float()
-        point_cld = torch.cat((point_cld, semantic_id, semantic_color*0+0.5, rgb_loss, opt_count), -1)
+        point_cld = torch.cat((point_cld, semantic_id, semantic_color*0+0.5), -1)
         
     
     # sem_mask = (semantic_color[:,0] == 1) & (semantic_color[:,1] == 0) & (semantic_color[:,2] == 0)
@@ -172,9 +170,7 @@ def get_initial_pointcloud(w2c, transform_pts = True, compute_mean_sq_dist=False
     if load_semantics:
         semantic_id = 0.555*torch.ones(pts.shape[0]).reshape(-1,1).to(device).float() #just a fixed id for all auxiliar gaussians
         semantic_color = (127.0/255)*torch.ones_like(pts).to(device).float()# (-1,3) # just a fixed semantic color for all gaussians
-        rgb_loss = torch.ones(pts.shape[0]).reshape(-1,1).to(device).float()
-        opt_count = torch.zeros(semantic_color.shape[0]).reshape(-1,1).to(device).float()
-        point_cld = torch.cat((point_cld, semantic_id, semantic_color, rgb_loss, opt_count), -1)
+        point_cld = torch.cat((point_cld, semantic_id, semantic_color), -1)
         
 
     if compute_mean_sq_dist:
@@ -203,13 +199,10 @@ def initialize_params(init_pt_cld, num_frames, mean3_sq_dist, device, load_seman
     if load_semantics:
         # Exclude semantic_ids from gradient
         params_opt_exclude.add('semantic_ids')
-        params_opt_exclude.add('opt_count')
         # channel =6 for semantic id
         params['semantic_ids'] = init_pt_cld[:, 6].view(-1, 1)
         # Channel 7-9 for semantic colors
         params['semantic_colors'] = init_pt_cld[:, 7:10]
-        params['rgb_loss'] = init_pt_cld[:, 10].view(-1, 1)
-        params['opt_count'] = init_pt_cld[:, 11].view(-1, 1)
         
 
     # Initialize a single gaussian trajectory to model the camera poses relative to the first frame
@@ -258,7 +251,7 @@ def initialize_first_timestep(dataset_0, num_frames, scene_radius_depth_ratio, m
     if load_semantics:
         semantic_id = semantic_id.permute(2, 0, 1) # (H, W, 1) -> (1, H, W)
         semantic_color = semantic_color.permute(2, 0, 1) # (H, W, 3) -> (3, H, W)
-        rgb_loss = torch.zeros_like(depth)
+        
     else:
         semantic_id = None
         semantic_color = None
@@ -294,7 +287,7 @@ def initialize_first_timestep(dataset_0, num_frames, scene_radius_depth_ratio, m
                                                 w2c, mask=mask, compute_mean_sq_dist=True, 
                                                 mean_sq_dist_method=mean_sq_dist_method, device=device,
                                                 load_semantics=load_semantics, semantic_id=semantic_id,
-                                                semantic_color=semantic_color, rgb_loss = rgb_loss)
+                                                semantic_color=semantic_color)
 
     # Auxiliar point cloud
     # new_pt_cld2, mean3_sq_dist2 = get_initial_pointcloud(w2c, transform_pts=True, compute_mean_sq_dist=True,
@@ -412,9 +405,9 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
     depth_sil_rendervar = transformed_params2depthplussilhouette(params, curr_data['w2c'],
                                                                  transformed_pts, device=device)
     # filter points in image to update opt_count variable, jrcv
-    if mapping:
-        point_in_image_mask = filter_points_in_image(transformed_pts, curr_data['intrinsics'], H = curr_data['im'].shape[1], W = curr_data['im'].shape[2])
-        params['opt_count'][point_in_image_mask] += 1
+    # if mapping:
+    #     point_in_image_mask = filter_points_in_image(transformed_pts, curr_data['intrinsics'], H = curr_data['im'].shape[1], W = curr_data['im'].shape[2])
+        
     # RGB Rendering
     rendervar['means2D'].retain_grad()
     im, radius, _, = Renderer(raster_settings=curr_data['cam'])(**rendervar)
@@ -565,9 +558,9 @@ def get_loss_new(params, curr_data, variables, iter_time_idx, loss_weights, use_
     depth_sil_rendervar = transformed_params2depthplussilhouette(params, curr_data['w2c'],transformed_pts, device=device)
     
     # filter points in image to update opt_count variable
-    if mapping:
-        point_in_image_mask = filter_points_in_image(transformed_pts, curr_data['intrinsics'], H = curr_data['im'].shape[1], W = curr_data['im'].shape[2])
-        params['opt_count'][point_in_image_mask] += 1
+    # if mapping:
+    #     point_in_image_mask = filter_points_in_image(transformed_pts, curr_data['intrinsics'], H = curr_data['im'].shape[1], W = curr_data['im'].shape[2])
+    #     params['opt_count'][point_in_image_mask] += 1
 
     # RGB Rendering
     # current_datetime = datetime.now()
@@ -834,9 +827,7 @@ def initialize_new_params(new_pt_cld, mean3_sq_dist, device, load_semantics=Fals
     if load_semantics:
         params['semantic_ids'] = new_pt_cld[:, 6].view(-1, 1)
         params['semantic_colors'] = new_pt_cld[:, 7:10]
-        params['rgb_loss'] = new_pt_cld[:, 10].view(-1, 1)
-        params['opt_count'] = new_pt_cld[:, 11].view(-1, 1)
-
+        
 
     for k, v in params.items():
         if k not in params_opt_exclude:
@@ -990,7 +981,7 @@ def add_new_gaussians(params, params_opt_exclude, variables, curr_data, sil_thre
         if load_semantics:
             semantic_id = curr_data['semantic_id']
             semantic_color = curr_data['semantic_color']
-            rgb_loss = torch.zeros_like(curr_data['depth'])
+            
         else:
             semantic_id = None
             semantic_color = None
@@ -999,7 +990,7 @@ def add_new_gaussians(params, params_opt_exclude, variables, curr_data, sil_thre
                                                    curr_w2c, mask=non_presence_mask, compute_mean_sq_dist=True,
                                                    mean_sq_dist_method=mean_sq_dist_method, device=device,
                                                    load_semantics=load_semantics, semantic_id=semantic_id,
-                                                   semantic_color=semantic_color, rgb_loss = rgb_loss)
+                                                   semantic_color=semantic_color)
         new_params = initialize_new_params(new_pt_cld, mean3_sq_dist, device, load_semantics=load_semantics,
                                            params_opt_exclude=params_opt_exclude)
         for k, v in new_params.items():

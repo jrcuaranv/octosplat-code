@@ -864,8 +864,7 @@ class ActiveSLAM:
                 # cos_similarity = F.cosine_similarity(sem_target, self.params['semantic_colors'],dim=1)
                 
                 sem_mask = (rmse < 0.01) # TODO add parameters
-                stable_gaussians_mask = (self.params['opt_count'] > 10) # TODO add parameters
-                target_sem_mask = sem_mask.view(-1) & stable_gaussians_mask.view(-1)
+                target_sem_mask = sem_mask.view(-1)
 
                 n_sem_gaussians = sem_mask.sum().item()
                 n_stable_sem_gaussians = target_sem_mask.sum().item()
