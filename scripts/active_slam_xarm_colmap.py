@@ -132,6 +132,7 @@ class ActiveSLAM:
         if prefix == 'colmap_dataset':
             self.running_colmap_dataset = True
             self.colmap_scene_path = self.config['active_mapping'][prefix]['colmap_scene_path']
+            self.eval_data_folders = self.config['active_mapping'][prefix]['eval_data_folders']
             if self.colmap_scene_path is None:
                 self.colmap_scene_path = alternative_colmap_dataset
             if self.colmap_scene_path is None:
@@ -148,10 +149,7 @@ class ActiveSLAM:
                 print("Greenhouse ID:", greenhouse_id)
                 print("Row ID:", row_id)
                 self.episode_suffix = f"_g{greenhouse_id}_row{row_id}"
-                # ubuntu 20 laptop
-                # self.test_data_path = os.path.join('/mnt/ssd2T/datasets/gaussian_splat_data/active_mapping_evaluation_2026/eval_data_folders', f"greenhouse_{greenhouse_id}", f"row_{row_id}")
-                # jetson orin
-                self.test_data_path = os.path.join('/mnt/ssd1T/active_mapping_evaluation_2026/eval_data_folders', f"greenhouse_{greenhouse_id}", f"row_{row_id}")
+                self.test_data_path = os.path.join(self.eval_data_folders, f"greenhouse_{greenhouse_id}", f"row_{row_id}")
             print("Colmap scene path:", self.colmap_scene_path)
             print("Test data path:", self.test_data_path)
             self.train_files, self.test_files = self.split_colmap_dataset()
@@ -277,10 +275,12 @@ class ActiveSLAM:
         self.full_optimization_requested = False
         self.episode_dir = None
         self.offline_sample_idx = 0
+        self.start_mapping_time = time.time()
+        self.end_mapping_time = time.time()
         
 
     def save_params_callback(self, req):
-        
+        self.end_mapping_time = time.time()
         self.full_map_optimization(200) # a few additional optimization steps for refinenment
         rospy.loginfo("Saving parameters...")
         # Get current time
@@ -1618,6 +1618,9 @@ class ActiveSLAM:
             f.write(f"Mean RMSE: {mean_rmse}\n")
             f.write(f"Mean Depth L1: {mean_depth_l1}\n")
             f.write(f"Mean mIoU: {mean_miou}\n")
+            f.write(f"Number of keyframes: {len(self.keyframe_list)}\n")
+            f.write(f"Total time: {self.end_mapping_time - self.start_mapping_time}\n")
+            f.write(f"Time per frame: {(self.end_mapping_time - self.start_mapping_time)/len(self.keyframe_list)}\n")
         # printing metrics
         print(f"\nTraining Evaluation Metrics:")
         print(f"\nNumber of gaussians: {self.params['means3D'].shape[0]}")
@@ -1740,6 +1743,7 @@ class ActiveSLAM:
             f.write(f"Mean RMSE: {mean_rmse}\n")
             f.write(f"Mean Depth L1: {mean_depth_l1}\n")
             f.write(f"Mean mIoU: {mean_miou}\n")
+            
         # printing metrics
         print(f"\nTest Evaluation Metrics:")
         print(f"Number of gaussians: {self.params['means3D'].shape[0]}")

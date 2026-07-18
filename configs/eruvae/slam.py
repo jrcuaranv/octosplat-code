@@ -1,7 +1,20 @@
 import os
 from os.path import join as p_join
+import getpass
+username = getpass.getuser()
+if username == "temp":
+    output_dir = '/mnt/ssd2T/sgs_results_mapping/'
+    eval_data_folders = '/mnt/ssd2T/datasets/gaussian_splat_data/active_mapping_evaluation_2026/eval_data_folders'
+elif username == "jose":
+    output_dir = '/media/jose/SSD1G/results_mapping/'
+    eval_data_folders = None
+elif username == "companion":
+    output_dir = '/mnt/ssd2T/results_mapping/'
+    eval_data_folders = '/mnt/ssd1T/active_mapping_evaluation_2026/eval_data_folders'
+else:
+    raise ValueError(f"Unknown username: {username}. Please set the output_dir and eval_data_folders for this user.")
 
-scenes = ["plant3"] #can add more scenes to this list, jrcv
+scenes = ["plant3"] #No used anymore. can add more scenes to this list, jrcv
 
 
 
@@ -195,7 +208,7 @@ config = dict(
     active_mapping=dict(
         data_mode='colmap_dataset', # ['real_robot', 'gazebo_robot', 'colmap_dataset', 'rosbag_file'] (Adjusts Intrinsics and other data-related parameters based on the dataset being used for active mapping)
         real_robot=dict(
-            output_dir= '/mnt/ssd1T/results_mapping/',
+            output_dir= output_dir,
             apply_depth_median_filter = False,
             apply_statistical_outlier_filter = True,
             max_depth=1.5,
@@ -210,8 +223,7 @@ config = dict(
                                 [ 0.,          0.,          0.,          1.        ]]
         ),
         gazebo_robot=dict(
-            output_dir= '/media/jose/SSD1G/results_mapping/', # for jose user
-            # output_dir= '/mnt/ssd2T/sgs_results_mapping/', # for temp user
+            output_dir= output_dir, # for jose user
             apply_depth_median_filter = False,
             apply_statistical_outlier_filter = False,
             max_depth=1.5,
@@ -227,9 +239,8 @@ config = dict(
         ),
         # adjust intrinsics depending on the dataset being used for active mapping
         colmap_dataset=dict(
-            # output_dir= '/media/jose/SSD1G/results_mapping/', # for jose user
-            # output_dir= '/mnt/ssd2T/sgs_results_mapping/', # for temp user
-            output_dir= '/mnt/ssd1T/results_mapping/', # for orin computer
+            output_dir= output_dir,
+            eval_data_folders = eval_data_folders,
             # datasets in temp user's directory
             # colmap_scene_path = '/mnt/ssd2T/datasets/gaussian_splat_data/2026-05-13-11-03-47_greenhouse',
             # colmap_scene_path = '/mnt/ssd2T/datasets/gaussian_splat_data/2026-06-18_12-53-29_gazebo_peppers',
@@ -250,7 +261,7 @@ config = dict(
         ),
         # adjust intrinsics depending on the dataset being used for active mapping
         rosbag_file=dict(
-            output_dir= '/media/jose/SSD1G/results_mapping/',
+            output_dir= output_dir,
             apply_depth_median_filter = False,
             apply_statistical_outlier_filter = True,
             max_depth=1.5,
