@@ -281,7 +281,8 @@ class ActiveSLAM:
 
     def save_params_callback(self, req):
         self.end_mapping_time = time.time()
-        self.full_map_optimization(200) # a few additional optimization steps for refinenment
+        if self.running_colmap_dataset:
+            self.full_map_optimization(200) # a few additional optimization steps for refinenment
         rospy.loginfo("Saving parameters...")
         # Get current time
         now = datetime.now()
@@ -735,7 +736,7 @@ class ActiveSLAM:
                 seperate_tracking_res = False
         
         load_semantics = True
-        num_frames = min(dataset_config["num_frames"], len(self.train_files) if self.running_colmap_dataset else float('inf'))
+        num_frames = min(dataset_config["num_frames"], len(self.train_files)) if self.running_colmap_dataset else 100
         
         
         valid_data = False
@@ -824,7 +825,7 @@ class ActiveSLAM:
                         if self.new_rgbd_slam_session == True:
                             print("New RGBD SLAM session triggered. Exiting current SLAM session.")
                             return
-                        if time_idx == num_frames - 1:
+                        if self.running_colmap_dataset == True and time_idx == num_frames - 1:
                             self.save_params_callback(None)
                             print(f"Checkpoint reached at time idx {time_idx}. Pausing SLAM session for inspection.")
                             # input("Press Enter to continue...")
@@ -1022,7 +1023,7 @@ class ActiveSLAM:
                                                     config['tracking']['use_l1'], config['tracking']['ignore_outlier_depth_loss'],
                                                     tracking=True, device=self.device, plot_dir=self.eval_dir,
                                                     visualize_tracking_loss=config['tracking']['visualize_tracking_loss'],
-                                                    tracking_iteration=iter, load_semantics=load_semantics)
+                                                    tracking_iteration=iter, load_semantics=load_semantics, running_baseline=config['running_baseline'])
                     # Backprop
                     loss.backward()
                     # Optimizer Update
@@ -1211,7 +1212,7 @@ class ActiveSLAM:
                     loss, self.variables, losses = get_loss(self.params, iter_data, self.variables, iter_time_idx, config['mapping']['loss_weights'],
                                                     config['mapping']['use_sil_for_loss'], config['mapping']['sil_thres'],
                                                     config['mapping']['use_l1'], config['mapping']['ignore_outlier_depth_loss'],
-                                                    mapping=True, device=self.device, plot_dir = self.eval_dir, load_semantics=load_semantics, visualization = visualization)
+                                                    mapping=True, device=self.device, plot_dir = self.eval_dir, load_semantics=load_semantics, visualization = visualization, running_baseline=config['running_baseline'])
                     loss_end_time = time.time()
                     loss_compute_times.append(loss_end_time - loss_start_time)
                     # Backprop
@@ -1401,7 +1402,7 @@ class ActiveSLAM:
                                                 self.config['tracking']['use_l1'], self.config['tracking']['ignore_outlier_depth_loss'],
                                                 tracking=True, device=self.device, plot_dir=self.eval_dir,
                                                 visualize_tracking_loss=self.config['tracking']['visualize_tracking_loss'],
-                                                tracking_iteration=iter, load_semantics=True)
+                                                tracking_iteration=iter, load_semantics=True, running_baseline=self.config['running_baseline'])
                 # Backprop
                 loss.backward()
                 # Optimizer Update
@@ -1481,7 +1482,7 @@ class ActiveSLAM:
             loss, self.variables, losses = get_loss(self.params, iter_data, self.variables, iter_time_idx, self.config['mapping']['loss_weights'],
                                             self.config['mapping']['use_sil_for_loss'], self.config['mapping']['sil_thres'],
                                             self.config['mapping']['use_l1'], self.config['mapping']['ignore_outlier_depth_loss'],
-                                            mapping=True, device=self.device, plot_dir = self.eval_dir, load_semantics=True, visualization = visualization)
+                                            mapping=True, device=self.device, plot_dir = self.eval_dir, load_semantics=True, visualization = visualization, running_baseline=self.config['running_baseline'])
             # Backprop
             loss.backward()
             with torch.no_grad():

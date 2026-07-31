@@ -17,7 +17,7 @@ else:
 
 scenes = ["plant3"] #No used anymore. can add more scenes to this list, jrcv
 
-
+RUNNING_BASELINE = True
 
 primary_device="cuda:0"
 seed = 0
@@ -32,7 +32,9 @@ mapping_iters = 60 #100 #60
 group_name = "eruvae"
 run_name = f"{scene_name}_{seed}"
 
+
 config = dict(
+    running_baseline=RUNNING_BASELINE,
     workdir=f"./experiments/{group_name}",
     run_name=run_name,
     seed=seed,
@@ -153,7 +155,7 @@ config = dict(
         #     reset_opacities_every=500, # Doesn't consider iter 0
         # ),
         prune_gaussians=True, # Prune Gaussians during Mapping
-        prune_background_gaussians=True,
+        prune_background_gaussians=not RUNNING_BASELINE, # Prune Background Gaussians during Mapping
         reset_semantics=False, # Reset all semantic colors to 0.5 periodically during Mapping
         reset_semantics_every=200, # Doesn't consider iter 0
         pruning_dict=dict( # Needs to be updated based on the number of mapping iterations
@@ -183,9 +185,9 @@ config = dict(
         densify_dict=dict( # Needs to be updated based on the number of mapping iterations
             start_after=1, #500,
             remove_big_after=0,
-            stop_after=5000,
+            stop_after=9999999,
             densify_every= 55,#100,
-            grad_thresh=0.0002, #*0.00005,
+            grad_thresh=0.0002 if RUNNING_BASELINE else 0.0002, #*0.00005,
             num_to_split_into=2,
             removal_opacity_threshold=0.4,
             final_removal_opacity_threshold=0.4,
@@ -207,12 +209,12 @@ config = dict(
         load_semantics=True, # Whether load semantic information
     ),
     active_mapping=dict(
-        data_mode='gazebo_robot', # ['real_robot', 'gazebo_robot', 'colmap_dataset', 'rosbag_file'] (Adjusts Intrinsics and other data-related parameters based on the dataset being used for active mapping)
+        data_mode='colmap_dataset', # ['real_robot', 'gazebo_robot', 'colmap_dataset', 'rosbag_file'] (Adjusts Intrinsics and other data-related parameters based on the dataset being used for active mapping)
         real_robot=dict(
             output_dir= output_dir,
             apply_depth_median_filter = False,
             apply_statistical_outlier_filter = True,
-            max_depth=1.5,
+            max_depth=1.0,
             crop_size = None,
             fx = 381.97095128993436,
             fy = 382.44965399519884,
@@ -227,7 +229,7 @@ config = dict(
             output_dir= output_dir, # for jose user
             apply_depth_median_filter = False,
             apply_statistical_outlier_filter = False,
-            max_depth=1.5,
+            max_depth=1.0,
             crop_size = None,
             fx = 381.3624572753906,
             fy = 381.3624572753906,
