@@ -79,7 +79,7 @@ from datasets.gradslam_datasets import (
     ScannetPPDataset,
     NeRFCaptureDataset
 )
-from utils.common_utils import seed_everything, save_params_ckpt, save_params
+from utils.common_utils import seed_everything, save_params_ckpt, save_params, get_gpu_memory
 # from utils.eval_helpers import report_loss, report_progress, eval
 # from utils.eval_helpers import report_progress
 from utils.keyframe_selection import keyframe_selection_overlap
@@ -277,6 +277,7 @@ class ActiveSLAM:
         self.offline_sample_idx = 0
         self.start_mapping_time = time.time()
         self.end_mapping_time = time.time()
+        self.gpu_memory_list = []
         
 
     def save_params_callback(self, req):
@@ -738,7 +739,7 @@ class ActiveSLAM:
         load_semantics = True
         num_frames = min(dataset_config["num_frames"], len(self.train_files)) if self.running_colmap_dataset else 100
         
-        
+        print("========= NNumber of frames to process:", num_frames)
         valid_data = False
         while valid_data == False:
             self.pub_gs_status.publish(Float32(1.0))    
@@ -781,6 +782,7 @@ class ActiveSLAM:
         tracking_frame_time_count = 0
         mapping_frame_time_sum = 0
         mapping_frame_time_count = 0
+        self.gpu_memory_list = []
 
         checkpoint_time_idx = 0
         
@@ -1105,7 +1107,7 @@ class ActiveSLAM:
                     # Add new Gaussians to the scene based on the Silhouette
                     self.params, self.variables = add_new_gaussians(self.params, self.params_opt_exclude, self.variables, densify_curr_data, 
                                                         config['mapping']['sil_thres'], time_idx, config['mean_sq_dist_method'],
-                                                        self.device, load_semantics=load_semantics)
+                                                        self.device, load_semantics=load_semantics, fill_depth_holes=config['mapping']['fill_depth_holes'])
                     
                     
                 # Update keyframes for gaussian mapping
@@ -1272,6 +1274,10 @@ class ActiveSLAM:
                 mapping_end_time = time.time()
                 mapping_frame_time_sum += mapping_end_time - mapping_start_time
                 mapping_frame_time_count += 1
+                gpu_memory = get_gpu_memory()
+                if gpu_memory is not None:
+                    self.gpu_memory_list.append(gpu_memory)
+                
                 print(f"Total loss compute time: {sum(loss_compute_times)}")
                 print(f"Total prune compute time: {sum(prune_compute_times)}")
                 print(f"Total mapping time: {mapping_end_time - mapping_start_time}")
@@ -1621,6 +1627,7 @@ class ActiveSLAM:
             f.write(f"Number of keyframes: {len(self.keyframe_list)}\n")
             f.write(f"Total time: {self.end_mapping_time - self.start_mapping_time}\n")
             f.write(f"Time per frame: {(self.end_mapping_time - self.start_mapping_time)/len(self.keyframe_list)}\n")
+            f.write(f"Max GPU Memory: {max(self.gpu_memory_list) if len(self.gpu_memory_list) > 0 else 0}\n")
         # printing metrics
         print(f"\nTraining Evaluation Metrics:")
         print(f"\nNumber of gaussians: {self.params['means3D'].shape[0]}")
@@ -1743,6 +1750,7 @@ class ActiveSLAM:
             f.write(f"Mean RMSE: {mean_rmse}\n")
             f.write(f"Mean Depth L1: {mean_depth_l1}\n")
             f.write(f"Mean mIoU: {mean_miou}\n")
+            f.write(f"Max GPU Memory: {max(self.gpu_memory_list) if len(self.gpu_memory_list) > 0 else 0}\n")
             
         # printing metrics
         print(f"\nTest Evaluation Metrics:")

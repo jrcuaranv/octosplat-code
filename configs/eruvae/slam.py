@@ -17,7 +17,7 @@ else:
 
 scenes = ["plant3"] #No used anymore. can add more scenes to this list, jrcv
 
-RUNNING_BASELINE = True
+RUNNING_BASELINE = False
 
 primary_device="cuda:0"
 seed = 0
@@ -70,7 +70,7 @@ config = dict(
         start=0,
         end=-1,
         stride=1,
-        num_frames= 80,#Set to -1 to use all frames
+        num_frames= 150,#Set to -1 to use all frames
         load_semantics=True,
         num_semantic_classes=3 # background, fruit, leaves
     ),
@@ -110,6 +110,7 @@ config = dict(
     mapping=dict(
         num_iters=mapping_iters,
         add_new_gaussians=True, #TODO CHECK
+        fill_depth_holes=False, # Didn't really help. Keep false. Fill Depth Holes in the GT Depth Map before adding new Gaussians
         sil_thres=0.5, #0.5 For Addition of new Gaussians. Densify areas with silh. lower than this
         use_l1=True,
         use_sil_for_loss=False,
@@ -155,7 +156,7 @@ config = dict(
         #     reset_opacities_every=500, # Doesn't consider iter 0
         # ),
         prune_gaussians=True, # Prune Gaussians during Mapping
-        prune_background_gaussians=not RUNNING_BASELINE, # Prune Background Gaussians during Mapping
+        prune_background_gaussians= not RUNNING_BASELINE, # Prune Background Gaussians during Mapping
         reset_semantics=False, # Reset all semantic colors to 0.5 periodically during Mapping
         reset_semantics_every=200, # Doesn't consider iter 0
         pruning_dict=dict( # Needs to be updated based on the number of mapping iterations
@@ -187,7 +188,7 @@ config = dict(
             remove_big_after=0,
             stop_after=9999999,
             densify_every= 55,#100,
-            grad_thresh=0.0002 if RUNNING_BASELINE else 0.0002, #*0.00005,
+            grad_thresh=0.0004 if RUNNING_BASELINE else 0.0002, #*0.00005,
             num_to_split_into=2,
             removal_opacity_threshold=0.4,
             final_removal_opacity_threshold=0.4,

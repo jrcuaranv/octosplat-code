@@ -5,6 +5,7 @@ import time
 import pandas as pd
 from importlib.machinery import SourceFileLoader
 
+from scipy.ndimage import distance_transform_edt
 
 import cv2
 import matplotlib.pyplot as plt
@@ -895,27 +896,36 @@ def fill_zeros_nearest(depth_map, max_iter=1000):
 
     return depth.squeeze(0).squeeze(0)
 
+
+
 def add_new_gaussians(params, params_opt_exclude, variables, curr_data, sil_thres, time_idx,
-                      mean_sq_dist_method, device="cuda", load_semantics=False):
+                      mean_sq_dist_method, device="cuda", load_semantics=False, fill_depth_holes=False):
     # Silhouette Rendering
     transformed_pts = transform_to_frame(params, time_idx, gaussians_grad=False,
                                          camera_grad=False, device=device)
     depth_sil_rendervar = transformed_params2depthplussilhouette(params, curr_data['w2c'],
                                                                  transformed_pts, device=device)
     
-    fill_foreground_holes = False # added by jrcv
             
     depth_sil, _, _, = Renderer(raster_settings=curr_data['cam'])(**depth_sil_rendervar)
     silhouette = depth_sil[1, :, :]
     non_presence_sil_mask = (silhouette < sil_thres)
     gt_depth = curr_data['depth'][0, :, :]
     
-    if fill_foreground_holes:
+    if fill_depth_holes:
         gt_seg = curr_data['semantic_color']
         background_color = torch.tensor([0, 0, 0],device=device, dtype=gt_seg.dtype)
-        background_mask = torch.all(gt_seg == background_color[:, None, None], dim=0)
-        gt_depth_filled = fill_zeros_nearest(gt_depth, max_iter=1000)
-        gt_depth[~background_mask] = gt_depth_filled[~background_mask] # fill only relevant semantics (foreground)
+        background_mask = torch.all(gt_seg == background_color[:, None, None], dim=0).squeeze(0)
+        background_mask_numpy = background_mask.detach().cpu().numpy()
+        depth_numpy = gt_depth.detach().cpu().numpy()
+        valid_numpy = (depth_numpy > 0)
+        to_fill_mask = (~background_mask_numpy) & (~valid_numpy) # fill only zero depth values from the foreground
+        _, nearest = distance_transform_edt(~valid_numpy, return_indices=True)
+        filled = depth_numpy.copy()
+        filled[to_fill_mask] = depth_numpy[nearest[0][to_fill_mask], nearest[1][to_fill_mask]]
+        gt_depth = torch.from_numpy(filled).to(device=device, dtype=gt_depth.dtype)
+        # gt_depth_filled = fill_zeros_nearest(gt_depth, max_iter=1000)
+        # gt_depth[~background_mask] = gt_depth_filled[~background_mask] # fill only relevant semantics (foreground)
     
     # Check for new foreground objects by using GT depth
     render_depth = depth_sil[0, :, :]

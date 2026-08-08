@@ -175,7 +175,7 @@ def main():
     parser.add_argument("--max_depth", type=float, default=1.0, help="Depth values above this (in meters) are ignored")
     parser.add_argument("--apply_depth_median_filter", action="store_true")
     parser.add_argument("--apply_statistical_outlier_filter", action="store_true")
-    parser.add_argument("--save_qualitative_every", type=int, default=0,
+    parser.add_argument("--save_qualitative_every", type=int, default=1,
                          help="Save GT/rendered qualitative images every N frames, 0 to disable")
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
