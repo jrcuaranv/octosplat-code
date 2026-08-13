@@ -5,41 +5,14 @@ import random
 import torch
 from utils.convert_ply import convert
 
-import subprocess
-
 
 def get_gpu_memory():
-    """Return a list of dicts with memory stats (in MiB) for each GPU.
-
-    Each dict has keys: index, memory_used, memory_total, memory_free.
-    Returns None if nvidia-smi is unavailable or fails.
+    """Return the peak GPU memory allocated by PyTorch's caching allocator on the
+    current CUDA device since the last reset, in MiB. Returns None if CUDA is unavailable.
     """
-    try:
-        output = subprocess.run(
-            [
-                "nvidia-smi",
-                "--query-gpu=index,memory.used,memory.total,memory.free",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-    except (FileNotFoundError, subprocess.CalledProcessError):
+    if not torch.cuda.is_available():
         return None
-
-    gpus = []
-    for line in output.strip().splitlines():
-        index, used, total, free = (int(x) for x in line.split(","))
-        gpus.append(
-            {
-                "index": index,
-                "memory_used": used,
-                "memory_total": total,
-                "memory_free": free,
-            }
-        )
-    return gpus[0]["memory_used"]
+    return torch.cuda.max_memory_allocated() // (1024 ** 2)
 
 
 def seed_everything(seed=42):

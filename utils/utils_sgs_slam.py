@@ -405,10 +405,6 @@ def get_loss_baseline(params, curr_data, variables, iter_time_idx, loss_weights,
     rendervar = transformed_params2rendervar(params, transformed_pts, device=device)
     depth_sil_rendervar = transformed_params2depthplussilhouette(params, curr_data['w2c'],
                                                                  transformed_pts, device=device)
-    # filter points in image to update opt_count variable, jrcv
-    # if mapping:
-    #     point_in_image_mask = filter_points_in_image(transformed_pts, curr_data['intrinsics'], H = curr_data['im'].shape[1], W = curr_data['im'].shape[2])
-        
     # RGB Rendering
     rendervar['means2D'].retain_grad()
     im, radius, _, = Renderer(raster_settings=curr_data['cam'])(**rendervar)
@@ -526,7 +522,8 @@ def get_loss_baseline(params, curr_data, variables, iter_time_idx, loss_weights,
 # new loss
 def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_for_loss, sil_thres,
              use_l1, ignore_outlier_depth_loss, tracking=False, mapping=False, do_ba=False, device="cuda",
-             plot_dir=None, visualize_tracking_loss=False, tracking_iteration=None, load_semantics=False, visualization = False, running_baseline=False):
+             plot_dir=None, visualize_tracking_loss=False, tracking_iteration=None, load_semantics=False,
+             visualization = False, running_baseline=False, confidence_threshold=0.4, max_depth=1.0):
     # Initialize Loss Dictionary
     if running_baseline:
         return get_loss_baseline(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_for_loss, sil_thres,
@@ -534,14 +531,10 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
              plot_dir, visualize_tracking_loss, tracking_iteration, load_semantics, visualization)
     losses = {}
     if tracking:
-        # print("******tracking********")
-        # Get current frame Gaussians, where only the camera pose gets gradient
         transformed_pts = transform_to_frame(params, iter_time_idx, gaussians_grad=False,
                                              camera_grad=True, device=device)
         
     elif mapping:
-        # print("****MAPPING*******")
-        
         if do_ba:
             # Get current frame Gaussians, where both camera pose and Gaussians get gradient
             transformed_pts = transform_to_frame(params, iter_time_idx, gaussians_grad=True,
@@ -551,7 +544,6 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
             transformed_pts = transform_to_frame(params, iter_time_idx, gaussians_grad=True,
                                                  camera_grad=False, device=device)
     else:
-        # print("*****Other case*****")
         # Get current frame Gaussians, where only the Gaussians get gradient
         transformed_pts = transform_to_frame(params, iter_time_idx, gaussians_grad=True,
                                              camera_grad=False, device=device)
@@ -560,29 +552,10 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
     rendervar = transformed_params2rendervar(params, transformed_pts, device=device)
     depth_sil_rendervar = transformed_params2depthplussilhouette(params, curr_data['w2c'],transformed_pts, device=device)
     
-    # filter points in image to update opt_count variable
-    # if mapping:
-    #     point_in_image_mask = filter_points_in_image(transformed_pts, curr_data['intrinsics'], H = curr_data['im'].shape[1], W = curr_data['im'].shape[2])
-    #     params['opt_count'][point_in_image_mask] += 1
-
-    # RGB Rendering
-    # current_datetime = datetime.now()
-    # time_prefix = current_datetime.strftime("%Y-%m-%d-%H-%M-%S")
-    # os.makedirs(plot_dir, exist_ok=True)
     
     rendervar['means2D'].retain_grad()
     im, radius, _, = Renderer(raster_settings=curr_data['cam'])(**rendervar)
     variables['means2D'] = rendervar['means2D']  # Gradient only accum from colour render for densification
-
-    # img1 = torch.clip(im.permute(1, 2, 0).detach().cpu(), 0, 1)
-    # plt.figure(1)
-    # plt.imshow(img1)
-    # plt.savefig(os.path.join(plot_dir, time_prefix+'_img1.png'), bbox_inches='tight')
-
-    # curr_data['cam']
-    # im2, radius2, _, = Renderer(raster_settings=curr_data['cam'])(**rendervar)
-    # variables['means2D'] = rendervar['means2D']  # Gradient only accum from colour render for densification
-
 
     # Depth & Silhouette Rendering
     depth_sil, _, _, = Renderer(raster_settings=curr_data['cam'])(**depth_sil_rendervar)
@@ -592,56 +565,33 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
     depth_sq = depth_sil[2, :, :].unsqueeze(0)
     uncertainty = depth_sq - depth**2
     uncertainty = uncertainty.detach()
-    # entropy = -silhouette*torch.log2(silhouette) - (1-silhouette)*torch.log2(1-silhouette) #jrcv
-    # entropy = torch.nan_to_num(entropy, nan=0.0) #jrcv
-
+    
     # Semantic colors Rendering
     rgb_fg_mask = None
     if load_semantics:
         semantic_rendervar = transformed_semantics2rendervar(params, transformed_pts, device=device)
-        # rgb_loss_rendervar = transformed_rgb_loss_rendervar(params, transformed_pts, device=device)
-        # entropy_rendervar = transformed_entropy2rendervar(params, transformed_pts, device=device)
         rendered_seg, _, _, = Renderer(raster_settings=curr_data['cam'])(**semantic_rendervar)
-        # rendered_rgb_loss, _, _, = Renderer(raster_settings=curr_data['cam'])(**rgb_loss_rendervar)
-        # rendered_entropy, _, _, =Renderer(raster_settings=curr_data['cam'])(**entropy_rendervar)
-    
+        
     # forground mask
     confidende_map = curr_data['confidence_map']
     gt_semantic = curr_data['semantic_color']
     is_background = gt_semantic.sum(dim=0, keepdim=True) == 0
-    high_confidence = confidende_map > 0.4
+    high_confidence = confidende_map > confidence_threshold
     rgb_fg_mask = ((~is_background) & high_confidence).float()
     gt_depth = curr_data['depth']
-    rgb_fg_mask[gt_depth > 1.0] = 0
+    rgb_fg_mask[gt_depth > max_depth] = 0
     
 
     # Mask with valid depth values (accounts for outlier depth values)
 
     nan_mask = (~torch.isnan(depth)) & (~torch.isnan(uncertainty))
     
-    # if ignore_outlier_depth_loss:
-    #     depth_error = torch.abs(curr_data['depth'] - depth) * (curr_data['depth'] > 0)
-    #     mask = (depth_error < 10*depth_error.median())
-    #     mask = mask & (curr_data['depth'] > 0)
-    # else:
-    #     mask = (curr_data['depth'] > 0)
-
-    # originally, considering mask for curr_data[depth]>0 (meaning ignoring free space),
-    # results in floating gaussians that are never optimized. Any gaussian that after some optimization
-    # step falls in the empty space, will stay there for ever.
-    # mask = mask & nan_mask # commented, jrcv
-    
     mask = nan_mask & (curr_data['depth'] > 0) & (rgb_fg_mask[0] > 0) # 
     
     # Mask with presence silhouette mask (accounts for empty space)
     if tracking and use_sil_for_loss:
         mask = mask & presence_sil_mask
-    # else: # if mapping
-    #     # trying to solve the problem of floating gaussians during mapping
-    #     # this consideres all depth values
-    #     # At this point, nan values are also zero.
-    #     mask = (curr_data['depth'] >= 0) # this seems to work # jrcv, added TODO: further experiments might be necessary
-
+    
     # Depth loss
     if use_l1:
         mask = mask.detach()
@@ -650,10 +600,7 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
         else:
             losses['depth'] = torch.abs(curr_data['depth'] - depth)[mask].mean() #original TODO, uncomment
             # losses['depth'] = torch.abs(curr_data['depth'] - depth).mean()
-    # test quality loss
-    # current_rgb_loss = torch.abs(im - curr_data['im']).detach()
-    # losses['quality'] = torch.abs(current_rgb_loss - rendered_rgb_loss).mean()
-
+    
     # RGB Loss
     if tracking and (use_sil_for_loss or ignore_outlier_depth_loss):
         color_mask = torch.tile(mask, (3, 1, 1))
@@ -666,15 +613,11 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
         if load_semantics:
             losses['seg'] = torch.abs(curr_data['semantic_color'] - rendered_seg).sum()
     else:
-        # losses['im'] =  0.8 * l1_loss_v1(im, curr_data['im']) + 0.2 * (1.0 - calc_ssim(im, curr_data['im']))
         n_valid = rgb_fg_mask.sum().clamp(min=1)
         rgb_Ll1_loss = (torch.abs(im - curr_data['im']) * rgb_fg_mask).sum() / (n_valid * im.shape[0])
         rgb_ssim_loss = (1.0 - calc_ssim(im * rgb_fg_mask, curr_data['im'] * rgb_fg_mask))
         losses['im'] = 0.8 * rgb_Ll1_loss + 0.2 * rgb_ssim_loss
         if load_semantics:
-            # losses['seg'] = 0.8 * l1_loss_v1(rendered_seg, curr_data['semantic_color']) \
-            #     + 0.2 * (1.0 - calc_ssim(rendered_seg, curr_data['semantic_color']))
-            # losses['seg'] = l1_loss_v1(rendered_seg, curr_data['semantic_color']) # okay
             losses['seg'] = torch.abs(curr_data['confidence_map']**3*(rendered_seg - curr_data['semantic_color'])).mean() # okay
 
     
@@ -724,73 +667,6 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
         ax[1, 3].set_title("mask")
         
 
-        # ax[0, 3].imshow(presence_sil_mask.detach().cpu(), cmap="gray")
-        # ax[0, 3].set_title("Silhouette Mask")
-        # ax[1, 3].imshow(mask[0].detach().cpu(), cmap="gray")
-        # ax[1, 3].set_title("Loss Mask")
-        # ax[1, 3].imshow(silhouette.detach().cpu(), cmap="jet")
-        # ax[1, 3].set_title("Silhoutte")
-        # ax[1, 3].imshow(entropy.detach().cpu()) #, cmap="jet")
-        # ax[1, 3].set_title("Entropy")
-
-        # vis_rend_rgb_loss = torch.clip(rendered_rgb_loss.mean(dim=0).detach().cpu(), 0, 1)
-        # ax[1, 3].imshow(vis_rend_rgb_loss, cmap="jet", vmin=0, vmax=0.6)
-        # ax[1, 3].set_title("rend_rgb_loss")
-        
-        # ax[1, 3].imshow(rendered_entropy)
-        # ax[1, 3].set_title("rend_entropy")
-        
-
-        
-        
-
-        mask_cpu = mask.squeeze().cpu()
-        # plt.figure(10)
-        # plt.imshow(diff_rgb*mask_cpu, cmap="jet", vmin=0, vmax=0.6)
-        # plt.title("dif rgb")
-        # plt.figure(11)
-        # plt.imshow(vis_rend_rgb_loss*mask_cpu, cmap="jet", vmin=0, vmax=0.6)
-        # plt.title("rendered rgb loss")
-        # plt.show()
-
-        # plt.figure(10)
-        # plt.imshow(entropy.detach().cpu(), cmap="jet", vmin=0, vmax=1.0)
-        # plt.title("Entropy of Silloutte")
-
-        # plt.figure(11)
-        # plt.imshow(rendered_entropy.detach().cpu(), cmap="jet", vmin=0, vmax=1.0)
-        # plt.title("Rendered entropy")
-        # plt.show()
-        
-        # plt.figure(14)
-        # plt.imshow(curr_data['confidence_map'].detach().cpu().numpy())
-        # plt.title("confidence map")
-
-        # weighted_sem_img = curr_data['semantic_color'] #* color_mask # gt semantic image
-        # viz_sem_img = torch.clip(weighted_sem_img.permute(1, 2, 0).detach().cpu(), 0, 1)
-
-        # plt.figure(15)
-        # plt.imshow(viz_sem_img)
-        # plt.title("Semantics")
-        # plt.show()
-
-        ## Save Tracking Loss Viz
-        # save_plot_dir = os.path.join(plot_dir, f"tracking_%04d" % iter_time_idx)
-        # os.makedirs(save_plot_dir, exist_ok=True)
-        # plt.savefig(os.path.join(save_plot_dir, f"%04d.png" % tracking_iteration), bbox_inches='tight')
-        # plt.close()
-
-        # cam_rot = F.normalize(params['cam_unnorm_rots'][..., iter_time_idx].detach())
-        # cam_tran = params['cam_trans'][..., iter_time_idx].detach()
-        # rel_w2c = torch.eye(4).to(device).float()
-        # rel_w2c[:3, :3] = build_rotation(cam_rot)
-        # rel_w2c[:3, 3] = cam_tran
-        # print("iter time index:", iter_time_idx)
-        # print("relative_w2c:\n")
-        # print(rel_w2c)
-        # input("Press enter:")
-        
-        # Turn off axis
         for i in range(2):
             for j in range(4):
                 ax[i, j].axis('off')

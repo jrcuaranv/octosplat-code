@@ -513,25 +513,9 @@ def densify_v2(params, variables, optimizer, iter, densify_dict, params_opt_excl
             print(f"{GREEN}\nDensifying at iteration {iter}{RESET}")
             grads = variables['means2D_gradient_accum'] / variables['denom']
             grads[grads.isnan()] = 0.0
-            ######
-            # semantic_targets = [[1,0,0],[0,1,0]] #rgb semantics
-            # masks = []
-            # for sem_t in semantic_targets:
-            #     sem_target = torch.tensor(sem_t).to(device)
-            #     rmse = torch.linalg.norm(sem_target - params['semantic_colors'].clip(0,1), axis=1)/math.sqrt(3)
-            #     to_keep_mask = rmse < 0.01
-            #     masks.append(to_keep_mask)
-            # to_keep_sem = masks[0] | masks[1]
             
-            ######
-            # print("INitial params: \n")
-            # for k, v in params.items():
-            #     print(f"params[{k}].shape: {v.shape}")
-
             to_clone = torch.logical_and(grads >= grad_thresh, (
                         torch.max(torch.exp(params['log_scales']), dim=1).values <= 1e-3))#0.01 * variables['scene_radius']))
-            # to_clone = torch.logical_and(to_clone, to_keep_sem) # only clone points with valid semantics # jrcv added. TESTING
-            # to_clone = 0*to_clone # fixing a bug. TODO: fix logic and remove
             print(f"Iteration {iter}: Number of points to clone: {to_clone.sum().item()}")
             if to_clone.sum() > 0:
                 
@@ -545,7 +529,7 @@ def densify_v2(params, variables, optimizer, iter, densify_dict, params_opt_excl
             to_split = torch.logical_and(padded_grad >= grad_thresh,
                                             torch.max(torch.exp(params['log_scales']), dim=1).values > 2.5e-3) #0.01 * variables['scene_radius'])
             print(f"Iteration {iter}: Number of points to split: {to_split.sum().item()}")
-            # to_split = 0*to_split # fixing a bug. TODO: fix logic and remove
+            
             if to_split.sum() > 2:
                 n = densify_dict['num_to_split_into']  # number to split into
                 new_params = {k: v[to_split].repeat(n, 1) for k, v in params.items() if k not in ['cam_unnorm_rots', 'cam_trans']}
@@ -564,7 +548,6 @@ def densify_v2(params, variables, optimizer, iter, densify_dict, params_opt_excl
             variables['max_2D_radius'] = torch.zeros(num_pts, device=device)
             variables['timestep'] = torch.zeros(num_pts, device=device) #jrcv added
             variables['seen'] = torch.zeros(num_pts, dtype=torch.bool, device=device) # jrcv added
-            # variables['means2D'] = torch.zeros(num_pts, device=device) #jrcv added. Its wrong.
             print("\nVariables scene radius:", variables['scene_radius'])
             if to_split.sum() > 2:
                 to_remove = torch.cat((to_split, torch.zeros(n * to_split.sum(), dtype=torch.bool, device=device)))
