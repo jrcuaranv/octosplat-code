@@ -13,7 +13,7 @@ else:
     raise ValueError(f"Unknown username: {username}. Please set the output_dir for this user in configs/octosplat/slam.py")
 
 RUNNING_BASELINE = False
-NUM_FRAMES = 30 # to limit the number of frames to a subset of the dataset
+NUM_FRAMES = 999999999 # to limit the number of frames to a subset of the dataset. Otherwise, keep it large to use the entire dataset. 
 primary_device="cuda:0"
 seed = 0
 
