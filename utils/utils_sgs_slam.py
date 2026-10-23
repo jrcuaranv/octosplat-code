@@ -618,7 +618,7 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
         rgb_ssim_loss = (1.0 - calc_ssim(im * rgb_fg_mask, curr_data['im'] * rgb_fg_mask))
         losses['im'] = 0.8 * rgb_Ll1_loss + 0.2 * rgb_ssim_loss
         if load_semantics:
-            losses['seg'] = torch.abs(curr_data['confidence_map']**3*(rendered_seg - curr_data['semantic_color'])).mean() # okay
+            losses['seg'] = torch.abs(curr_data['confidence_map']**2*(rendered_seg - curr_data['semantic_color'])).mean() # okay
 
     
     # Visualize the Diff Images
